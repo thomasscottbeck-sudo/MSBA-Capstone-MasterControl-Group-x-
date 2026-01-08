@@ -31,13 +31,7 @@
 ## ⚙️ Developer Tooling & Automation
 
 ### 1. Notebook Standards & The "Golden" YAML
-**Primary Directive:** Quarto (`.qmd`) is the required notebook format. It provides a unified engine for both R (`knitr`) and Python (`jupyter`).
-
-<details>
-<summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
-<br>
-
-Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
+**Primary Directive:** Copy this block **exactly** into the top of every `.qmd` file.
 
 ```yaml
 ---
@@ -69,14 +63,8 @@ editor: visual
 ---
 ```
 
-</details>
-
 ### 2. Foolproof Data Loading (The "Here" Rule)
-**Strict Rule:** Never use absolute paths (e.g., `C:/Users/Thomas/...`).
-To ensure code runs on every team member's machine instantly without changing paths:
-
-1.  **Save Raw Data:** Place all raw CSVs/Excel files in your local `data/` folder.
-2.  **Load Data:** Use the `here` library to detect the project root automatically.
+**Strict Rule:** Never use absolute paths. Use `here::here()` to detect the project root automatically.
 
 ```r
 library(here)
@@ -94,28 +82,7 @@ df <- read.csv(here::here("data", "your_filename.csv"))
 ## 🧠 Repository Architecture & Usage Flow
 *Visual map of how files, data, and code interact within this repository.*
 
-```mermaid
-graph TD
-    %% Nodes
-    Data(📂 data/ <br/> 🔒 Local Only <br/> <i>Raw CSVs</i>)
-    Docs[📂 docs/ <br/> 📋 Specs & QA]
-    NB_Ind[📂 notebooks/individual/ <br/> 🧪 <b>Sandbox</b> <br/> <i>Messy Work</i>]
-    NB_Fin[📂 notebooks/01..04/ <br/> 🚀 <b>Deliverables</b> <br/> <i>Polished Code</i>]
-    Out[📂 output/ <br/> 📤 Exports <br/> <i>Plots/CSVs</i>]
-
-    %% Edge Connections
-    Data -->|Load via 'here::here'| NB_Ind
-    Data -->|Load via 'here::here'| NB_Fin
-    Docs -.->|Guiding Specs| NB_Ind
-    NB_Ind -->|Refine & Merge| NB_Fin
-    NB_Fin -->|Render/Save| Out
-
-    %% Styles
-    style Data fill:#f8d7da,stroke:#721c24,stroke-width:2px,stroke-dasharray: 5 5
-    style NB_Fin fill:#d4edda,stroke:#155724,stroke-width:2px
-    style NB_Ind fill:#fff3cd,stroke:#856404,stroke-width:2px
-    style Out fill:#e2e3e5,stroke:#383d41,stroke-width:2px
-```
+![Repository Architecture](https://mermaid.ink/img/pako:eNqVkltv2jAUhf8K8nkgVfNQCJdKpQpV2zq0T6s8OHECrg028kOroP57nSRQ0qY8WPg437fPd_wGcyFZhGCes-y9oB6yTAsqL2sWsyj7xPMY6Q2LFZ_l2Xy5fMdiucAzFiuWc8F9cR2_8y2La75YvONJjH8_cM23PI35Zg5_FmQJ45KxSDEr-A3mZpX-X33d_N5O1dM25aJqM0Cj1Qp0tloBna5WQKfbCjB0WoGW1x_Q8-cKeL5cAb3AV0AvDBSQ6wcK6E2_AnrTq4DeDCqgN4MKGLpBBQzdoAKGblABQzeogKEbVMDQDSpg6AYVMHSDChgGgwoYBoMKGAaDChgGgwr4w2DQj69e_4C-N6iA3vcqoPf9Cuj9oAJ6P6iA3g8qoPeDCuj9oAJ6P6iA3g8q4NugAn4YVMBwW6GA4bZCAcNthQKG2woFDLcVCji63bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAr4bVsBwW6GA4bZCAcNthQKG2woFDLcVCvjL45a6Ww-1S26p2_VQu9hSdy9D7c2WunMZaie21O3KUDu2pW7XQ-3ElrpdGWrHttTteqid2FK3K0Pt2Ja6XQ-1E1vqdmWoHdtSt-uhdmJL3a4MtWNb6nY91E5sqduVoXZsS92uh9qJLXW7MtSObanb9VA7saVuV4basS11ux5qJ7bU7cpQO7albtf7_18c7d_O618c7U-u8i-O9m_v9S-O9idX-RdH-7f3-hdH-5Or_Iuj_dt7_Yuj_clV_sXR_u29_sXR_uQq_-Jo__Ze_-Jof3KVf3G0f3uvf3G0P7nKvzjW2n9T10v-3lJ3L0NtaEvduQy1oS115zLUhrbUnctQG9pSdy5DbWhL3bkMtaEtdX8Z6l4Q-P0gCKI4S-I4XgaBCIMgXkRhshz4P14QhH4Qx-EiTpI49P1FGCfhIvD9JAz9xcI_d0_Qk2gZxEEcROH8-5skWcRxFAbhIsyTKBwcv-v1H-1Wc_k)
 
 ## 📂 Physical Directory Structure
 ```text
