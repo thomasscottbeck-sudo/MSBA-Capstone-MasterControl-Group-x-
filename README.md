@@ -1,4 +1,4 @@
-# 📊 MSBA Capstone - Group Project Dashboard
+﻿# 📊 MSBA Capstone - Group Project Dashboard
 **MSBA IS 6813 | Spring 2026**
 
 [![Project Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)]()
@@ -7,10 +7,11 @@
 
 ---
 
-## 🛠️ Functional Hub
+## 🛠️ Functional Hub & Assignments
 
-| [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
-
+| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) |
+| :--- | :---: | :---: | :---: | :---: |
+| **Assignments** 📂 | [📂 01 Problem](./notebooks/01_Business_Problem/) | [📂 02 EDA](./notebooks/02_EDA/) | [📂 03 Modeling](./notebooks/03_Modeling/) | [📂 04 Presentation](./notebooks/04_Presentation/) |
 
 ---
 
@@ -30,7 +31,7 @@
 ## ⚙️ Developer Tooling & Automation
 
 ### 1. Notebook Standards & The "Golden" YAML
-**Primary Directive:** Quarto (`.qmd`) is the required notebook format. It provides a unified engine for both R (`knitr`) and Python (`jupyter`).
+**Primary Directive:** Quarto ('.qmd') is the required notebook format. It provides a unified engine for both R ('knitr') and Python ('jupyter').
 
 <details>
 <summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
@@ -38,7 +39,7 @@
 
 Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
 
-```yaml
+`yaml
 ---
 title: 
 subtitle: 
@@ -66,25 +67,25 @@ format:
     monofont: "Courier New"
 editor: visual
 ---
-```
+`
 
 </details>
 
 ### 2. Foolproof Data Loading (The "Here" Rule)
-**Strict Rule:** Never use absolute paths (e.g., `C:/Users/Thomas/...`).
+**Strict Rule:** Never use absolute paths (e.g., 'C:/Users/Thomas/...').
 To ensure code runs on every team member's machine instantly without changing paths:
 
-1.  **Save Raw Data:** Place all raw CSVs/Excel files in your local `data/` folder.
-2.  **Load Data:** Use the `here` library to detect the project root automatically.
+1.  **Save Raw Data:** Place all raw CSVs/Excel files in your local 'data/' folder.
+2.  **Load Data:** Use the 'here' library to detect the project root automatically.
 
-```r
+`
 # ✅ CORRECT: Works on Mac, Windows, and Linux automatically
 library(here)
 df <- read.csv(here::here("data", "application_train.csv"))
 
 # ❌ INCORRECT: Breaks on other computers
 df <- read.csv("C:/Users/Thomas/Repos/Project/data/application_train.csv")
-```
+`
 
 ### 3. Efficiency Shortcuts
 * **Track Changes:** View the real-time [Audit Trail](../../commits/main).
@@ -95,13 +96,13 @@ df <- read.csv("C:/Users/Thomas/Repos/Project/data/application_train.csv")
 ## 🧠 Repository Architecture & Usage Flow
 *Visual map of how files, data, and code interact within this repository.*
 
-```mermaid
+`mermaid
 graph TD
     %% Nodes
     Data(📂 data/ <br/> 🔒 Local Only <br/> <i>Raw CSVs</i>)
     Docs[📂 docs/ <br/> 📋 Specs & QA]
     NB_Ind[📂 notebooks/individual/ <br/> 🧪 <b>Sandbox</b> <br/> <i>Messy Work</i>]
-    NB_Fin[📂 notebooks/final/ <br/> 🚀 <b>Deliverables</b> <br/> <i>Polished Code</i>]
+    NB_Fin[📂 notebooks/01..04/ <br/> 🚀 <b>Deliverables</b> <br/> <i>Polished Code</i>]
     Out[📂 output/ <br/> 📤 Exports <br/> <i>Plots/CSVs</i>]
 
     %% Edge Connections
@@ -116,18 +117,21 @@ graph TD
     style NB_Fin fill:#d4edda,stroke:#155724,stroke-width:2px
     style NB_Ind fill:#fff3cd,stroke:#856404,stroke-width:2px
     style Out fill:#e2e3e5,stroke:#383d41,stroke-width:2px
-```
+`
 
 ## 📂 Physical Directory Structure
-```text
+`	ext
 ├── data/               # RAW data (Local only - Git ignored)
 ├── notebooks/
-│   ├── final/          # Shared Group Deliverables (.qmd)
+│   ├── 01_Business_Problem/
+│   ├── 02_EDA/
+│   ├── 03_Modeling/
+│   ├── 04_Presentation/
 │   └── individual/     # Individual "Sandboxes" for portfolio
 ├── output/             # Exported .csv results and .png plots
 ├── docs/               # Meeting notes and sponsor requirements
 └── README.md           # This Hub
-```
+`
 
 ---
 
@@ -139,4 +143,4 @@ graph TD
 | **Max Ridgeway** | [TBD] | [TBD] | +1 (801) 597-3824 |
 
 ---
-> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
+> **Lead Architect Note:** Before starting any work session, run git pull to sync the latest model changes from the team.
