@@ -4,7 +4,7 @@
 ---
 
 ## 🛠️ Functional Hub
-| [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Live Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-x/) |
+| [📋 Deliverable Specs](./docs/) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Live Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-x/) |
 | :---: | :---: | :---: | :---: |
 
 ---
