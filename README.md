@@ -1,4 +1,4 @@
-﻿# MSBA Capstone - Group Project Dashboard
+# 📊 MSBA Capstone - Group Project Dashboard
 **MSBA IS 6813 | Spring 2026**
 
 [![Project Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)]()
@@ -68,25 +68,52 @@ editor: visual
 ```
 </details>
 
-### 2. Efficiency Shortcuts
+### 2. Foolproof Data Loading (The "Here" Rule)
+**Strict Rule:** Never use absolute paths (e.g., `C:/Users/Thomas/...`).
+To ensure code runs on every team member's machine instantly without changing paths:
+
+1.  **Save Raw Data:** Place all raw CSVs/Excel files in your local `data/` folder.
+2.  **Load Data:** Use the `here` library to detect the project root automatically.
+
+```r
+# ✅ CORRECT: Works on Mac, Windows, and Linux automatically
+library(here)
+df <- read.csv(here::here("data", "application_train.csv"))
+
+# ❌ INCORRECT: Breaks on other computers
+df <- read.csv("C:/Users/Thomas/Repos/Project/data/application_train.csv")
+```
+
+### 3. Efficiency Shortcuts
 * **Track Changes:** View the real-time [Audit Trail](../../commits/main).
 * **Task Management:** Track progress via [Milestones](../../milestones).
-* **Reproducibility:** Always use `here::here("data", "filename.csv")`.
 
 ---
 
-## 🧠 Data Pipeline Architecture (Mermaid.js)
-*Visual representation of the project workflow. GitHub renders this natively.*
+## 🧠 Repository Architecture & Usage Flow
+*Visual map of how files, data, and code interact within this repository.*
 
 ```mermaid
-graph LR;
-    A[📂 Raw Data <br/> ./data] -->|Cleaner.R| B(🧹 Tidy Data);
-    B -->|EDA.qmd| C{🔍 Analysis};
-    C -->|Feature Eng| D[🤖 Model dev];
-    D -->|Quarto| E[🌐 HTML Dashboard];
-    D -->|Quarto| F[📄 PDF Report];
-    style A fill:#f9f,stroke:#333,stroke-width:2px
-    style E fill:#bbf,stroke:#333,stroke-width:2px
+graph TD
+    %% Nodes
+    Data(📂 data/ <br/> 🔒 Local Only <br/> <i>Raw CSVs</i>)
+    Docs[📂 docs/ <br/> 📋 Specs & QA]
+    NB_Ind[📂 notebooks/individual/ <br/> 🧪 <b>Sandbox</b> <br/> <i>Messy Work</i>]
+    NB_Fin[📂 notebooks/final/ <br/> 🚀 <b>Deliverables</b> <br/> <i>Polished Code</i>]
+    Out[📂 output/ <br/> 📤 Exports <br/> <i>Plots/CSVs</i>]
+
+    %% Edge Connections
+    Data -->|Load via 'here::here'| NB_Ind
+    Data -->|Load via 'here::here'| NB_Fin
+    Docs -.->|Guiding Specs| NB_Ind
+    NB_Ind -->|Refine & Merge| NB_Fin
+    NB_Fin -->|Render/Save| Out
+
+    %% Styles
+    style Data fill:#f8d7da,stroke:#721c24,stroke-width:2px,stroke-dasharray: 5 5
+    style NB_Fin fill:#d4edda,stroke:#155724,stroke-width:2px
+    style NB_Ind fill:#fff3cd,stroke:#856404,stroke-width:2px
+    style Out fill:#e2e3e5,stroke:#383d41,stroke-width:2px
 ```
 
 ## 📂 Physical Directory Structure
