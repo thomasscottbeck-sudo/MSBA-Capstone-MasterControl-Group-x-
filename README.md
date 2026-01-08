@@ -82,7 +82,16 @@ df <- read.csv(here::here("data", "your_filename.csv"))
 ## 🧠 Repository Architecture & Usage Flow
 *Visual map of how files, data, and code interact within this repository.*
 
-![Repository Architecture](https://mermaid.ink/img/pako:eNqVkltv2jAUhf8K8nkgVfNQCJdKpQpV2zq0T6s8OHECrg028kOroP57nSRQ0qY8WPg437fPd_wGcyFZhGCes-y9oB6yTAsqL2sWsyj7xPMY6Q2LFZ_l2Xy5fMdiucAzFiuWc8F9cR2_8y2La75YvONJjH8_cM23PI35Zg5_FmQJ45KxSDEr-A3mZpX-X33d_N5O1dM25aJqM0Cj1Qp0tloBna5WQKfbCjB0WoGW1x_Q8-cKeL5cAb3AV0AvDBSQ6wcK6E2_AnrTq4DeDCqgN4MKGLpBBQzdoAKGblABQzeogKEbVMDQDSpg6AYVMHSDChgGgwoYBoMKGAaDChgGgwr4w2DQj69e_4C-N6iA3vcqoPf9Cuj9oAJ6P6iA3g8qoPeDCuj9oAJ6P6iA3g8q4NugAn4YVMBwW6GA4bZCAcNthQKG2woFDLcVCji63bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAm7dsAJu3bACbt2wAr4bVsBwW6GA4bZCAcNthQKG2woFDLcVCvjL45a6Ww-1S26p2_VQu9hSdy9D7c2WunMZaie21O3KUDu2pW7XQ-3ElrpdGWrHttTteqid2FK3K0Pt2Ja6XQ-1E1vqdmWoHdtSt-uhdmJL3a4MtWNb6nY91E5sqduVoXZsS92uh9qJLXW7MtSObanb9VA7saVuV4basS11ux5qJ7bU7cpQO7albtf7_18c7d_O618c7U-u8i-O9m_v9S-O9idX-RdH-7f3-hdH-5Or_Iuj_dt7_Yuj_clV_sXR_u29_sXR_uQq_-Jo__Ze_-Jof3KVf3G0f3uvf3G0P7nKvzjW2n9T10v-3lJ3L0NtaEvduQy1oS115zLUhrbUnctQG9pSdy5DbWhL3bkMtaEtdX8Z6l4Q-P0gCKI4S-I4XgaBCIMgXkRhshz4P14QhH4Qx-EiTpI49P1FGCfhIvD9JAz9xcI_d0_Qk2gZxEEcROH8-5skWcRxFAbhIsyTKBwcv-v1H-1Wc_k)
+```text
+┌─────────────────┐       ┌────────────────────┐      ┌──────────────────┐
+│  📂 data/       │       │  📂 notebooks/     │      │  📂 output/      │
+│  (Local Only)   │──────▶│  (Code Execution)  │─────▶│  (Deliverables)  │
+│  Raw .csv Files │       │  .qmd Analysis     │      │  .csv / .png     │
+└─────────────────┘       └────────────────────┘      └──────────────────┘
+        │                           ▲
+        │                           │
+        └────── (Load via 'here') ──┘
+```
 
 ## 📂 Physical Directory Structure
 ```text
