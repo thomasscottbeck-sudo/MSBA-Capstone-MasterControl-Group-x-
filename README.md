@@ -10,7 +10,7 @@
 ## 🛠️ Functional Hub
 
 | [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-X/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-Group-X) |
-
+| :---: | :---: | :---: | :---: | :---: |
 
 ---
 
@@ -35,6 +35,7 @@
 <details>
 <summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
 <br>
+
 Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
 
 ```yaml
@@ -66,6 +67,7 @@ format:
 editor: visual
 ---
 ```
+
 </details>
 
 ### 2. Foolproof Data Loading (The "Here" Rule)
