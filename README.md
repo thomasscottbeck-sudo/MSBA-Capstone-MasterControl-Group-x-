@@ -1,6 +1,10 @@
 # 🏢 MasterControl Capstone: Command Center
 **MSBA IS 6813 | Spring 2026**
 
+[![Project Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)]()
+[![Engine](https://img.shields.io/badge/Engine-Quarto%20(Polyglot)-blue?style=flat-square)]()
+[![Deploy](https://img.shields.io/badge/Deploy-GitHub%20Pages-orange?style=flat-square)]()
+
 ---
 
 ## 🛠️ Functional Hub
@@ -22,15 +26,16 @@
 ---
 
 ## ⚙️ Developer Tooling & Automation
-*Standardized configs to ensure code runs on all machines instantly.*
 
 ### 1. Notebook Standards & The "Golden" YAML
-**Primary Directive:** Quarto (`.qmd`) is the required notebook format for this project. Unlike standard `.Rmd` or `.ipynb` files, `.qmd` provides a unified engine that supports both R and Python seamlessly. 
+**Primary Directive:** Quarto (`.qmd`) is the required notebook format. It provides a unified engine for both R (`knitr`) and Python (`jupyter`).
 
-The YAML header below is configured to be **polyglot-friendly**. It ensures that whether the notebook uses the `knitr` engine (R) or the `jupyter` engine (Python), the HTML and PDF outputs remain identical in professional formatting and functionality.
+<details>
+<summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
+<br>
+Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
 
-Copy this into the top of every `.qmd` file:
-
+```yaml
 ---
 title: 
 subtitle: 
@@ -58,15 +63,31 @@ format:
     monofont: "Courier New"
 editor: visual
 ---
+```
+</details>
 
 ### 2. Efficiency Shortcuts
-* **Track Changes:** View the real-time [Audit Trail](../../commits/main) of model edits.
-* **Task Management:** Assign work and track progress via [Milestones](../../milestones).
-* **Reproducibility:** Always use `here::here()` for data paths.
+* **Track Changes:** View the real-time [Audit Trail](../../commits/main).
+* **Task Management:** Track progress via [Milestones](../../milestones).
+* **Reproducibility:** Always use `here::here("data", "filename.csv")`.
 
 ---
 
-## 📂 System Architecture
+## 🧠 Data Pipeline Architecture (Mermaid.js)
+*Visual representation of the project workflow. GitHub renders this natively.*
+
+```mermaid
+graph LR;
+    A[📂 Raw Data <br/> ./data] -->|Cleaner.R| B(🧹 Tidy Data);
+    B -->|EDA.qmd| C{🔍 Analysis};
+    C -->|Feature Eng| D[🤖 Model dev];
+    D -->|Quarto| E[🌐 HTML Dashboard];
+    D -->|Quarto| F[📄 PDF Report];
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style E fill:#bbf,stroke:#333,stroke-width:2px
+```
+
+## 📂 Physical Directory Structure
 ```text
 ├── data/               # RAW data (Local only - Git ignored)
 ├── notebooks/
