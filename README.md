@@ -8,12 +8,14 @@
 ---
 
 ## 🛠️ Functional Hub
-| [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Live Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-X/) |
-| :---: | :---: | :---: | :---: |
+
+| [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-X/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-Group-X) |
+| :---: | :---: | :---: | :---: | :---: |
 
 ---
 
 ## 📅 Mission Milestones (Hard Deadlines)
+
 | Phase | Milestone | Hard Deadline |
 | :---: | :--- | :--- |
 | 🟢 | **Business Problem Statement** | **Jan 28** |
@@ -28,14 +30,14 @@
 ## ⚙️ Developer Tooling & Automation
 
 ### 1. Notebook Standards & The "Golden" YAML
-**Primary Directive:** Quarto ('.qmd') is the required notebook format. It provides a unified engine for both R ('knitr') and Python ('jupyter').
+**Primary Directive:** Quarto (`.qmd`) is the required notebook format. It provides a unified engine for both R (`knitr`) and Python (`jupyter`).
 
 <details>
 <summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
 <br>
 Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
 
-`yaml
+```yaml
 ---
 title: 
 subtitle: 
@@ -63,20 +65,20 @@ format:
     monofont: "Courier New"
 editor: visual
 ---
-`
+```
 </details>
 
 ### 2. Efficiency Shortcuts
 * **Track Changes:** View the real-time [Audit Trail](../../commits/main).
 * **Task Management:** Track progress via [Milestones](../../milestones).
-* **Reproducibility:** Always use here::here("data", "filename.csv").
+* **Reproducibility:** Always use `here::here("data", "filename.csv")`.
 
 ---
 
 ## 🧠 Data Pipeline Architecture (Mermaid.js)
 *Visual representation of the project workflow. GitHub renders this natively.*
 
-`mermaid
+```mermaid
 graph LR;
     A[📂 Raw Data <br/> ./data] -->|Cleaner.R| B(🧹 Tidy Data);
     B -->|EDA.qmd| C{🔍 Analysis};
@@ -85,10 +87,10 @@ graph LR;
     D -->|Quarto| F[📄 PDF Report];
     style A fill:#f9f,stroke:#333,stroke-width:2px
     style E fill:#bbf,stroke:#333,stroke-width:2px
-`
+```
 
 ## 📂 Physical Directory Structure
-`	ext
+```text
 ├── data/               # RAW data (Local only - Git ignored)
 ├── notebooks/
 │   ├── final/          # Shared Group Deliverables (.qmd)
@@ -96,7 +98,16 @@ graph LR;
 ├── output/             # Exported .csv results and .png plots
 ├── docs/               # Meeting notes and sponsor requirements
 └── README.md           # This Hub
-`
+```
 
 ---
-> **Lead Architect Note:** Before starting any work session, run git pull to sync the latest model changes from the team.
+
+## 📞 Contact Information
+
+| Team Member | Email (Personal) | Email (University) | Phone |
+| :--- | :--- | :--- | :--- |
+| **Thomas Beck** | thomasscottbeck@gmail.com | u0399590@utah.edu | +1 (801) 631-2080 |
+| **Max Ridgeway** | [TBD] | [TBD] | +1 (801) 597-3824 |
+
+---
+> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
