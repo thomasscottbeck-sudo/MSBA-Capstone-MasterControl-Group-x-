@@ -9,13 +9,13 @@
 
 ## 🛠️ Functional Hub & Assignments
 
-| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 Source Code](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
+| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Assignments** 📂 | [📂 01 Problem](./notebooks/01_Business_Problem/) | [📂 02 EDA](./notebooks/02_EDA/) | [📂 03 Modeling](./notebooks/03_Modeling/) | [📂 04 Presentation](./notebooks/04_Presentation/) | 🚫 |
 
 ---
 
-## 📅 Mission Milestones (Hard Deadlines)
+## 📅 Deadlines
 
 | Phase | Milestone | Hard Deadline |
 | :---: | :--- | :--- |
@@ -28,7 +28,7 @@
 
 ---
 
-## ⚙️ Developer Tooling & Automation
+## ⚙️ Notebook tips
 
 ### 1. Notebook Standards & The "Golden" YAML
 **Primary Directive:** Copy this block **exactly** into the top of every `.qmd` file.
@@ -95,8 +95,13 @@ n_jobs = multiprocessing.cpu_count() - 1
 print(f"Parallel processing enabled: {n_jobs} cores available.")
 ```
 
+#### ⚡ Performance Note: Why Parallel Processing?
+Standard R and Python scripts run linearly on a **single CPU core**, leaving 80-90% of your computer's power idle. By enabling parallel processing (as shown above), we distribute computations across multiple cores simultaneously.
+* **Impact:** This is critical for resource-intensive tasks like Random Forest, XGBoost, or Grid Search.
+* **Result:** It can reduce model training time by **4x to 8x** depending on your hardware.
+
 ### 3. Foolproof Data Loading (Polyglot Paths)
-**Strict Rule:** Never use absolute paths (e.g., `C:/Users/Thomas/...`). Use these project-aware path finders.
+Try not to use absolute paths (e.g., `C:/Users/Thomas/...`). 
 
 **For R (using `here`):**
 ```r
