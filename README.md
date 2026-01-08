@@ -1,58 +1,87 @@
-# 🏢 MasterControl Capstone: Predictive Quality Dashboard
-**MSBA IS 6813 | Spring 2026 | Group [X]**
+# 🏢 MasterControl Capstone: Command Center
+**MSBA IS 6813 | Spring 2026**
 
 ---
 
-## 🚀 Project Command Center
-[cite_start]This repository serves as the single source of truth for our sponsored case competition[cite: 9]. [cite_start]Our goal is to transition from "classroom sandboxes" to solving unstructured, real-world problems for MasterControl[cite: 8, 12].
-
-| [📅 Syllabus](./docs/Syllabus.md) | [📊 Data Room](./data) | [📝 Meeting Notes](./docs/meetings) | [🌐 MasterControl Docs](https://www.mastercontrol.com) |
+## 🛠️ Functional Hub
+| [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Live Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-x/) |
 | :---: | :---: | :---: | :---: |
 
 ---
 
-## 📈 Mission Roadmap & Milestones
-[cite_start]*Grading calibrated to engagement in the analytic process[cite: 26].*
-
-| Status | Phase | Milestone | Due Date |
-| :---: | :--- | :--- | :--- |
-| 🟢 | **Discovery** | [Business Problem Statement](./notebooks/final/01_Problem_Statement.qmd) | [cite_start]**Jan 28 (Wk 4)**  |
-| 🟡 | **Exploration** | [EDA Group Notebook](./notebooks/final/02_EDA.qmd) | [cite_start]**Feb 18 (Wk 7)** [cite: 23] |
-| ⚪ | **Modeling** | [Predictive Modeling Notebook](./notebooks/final/03_Modeling.qmd) | [cite_start]**Mar 18 (Wk 10)** [cite: 24] |
-| ⚪ | **Delivery** | **Final Presentation to Sponsor** | [cite_start]**Apr 8/15** [cite: 25] |
-| ⚪ | **Archive** | Individual GitHub Portfolios | [cite_start]**Finals Week** [cite: 19] |
-
----
-
-## 🛠 Technical Standards (The "Lead Architect" Spec)
-To ensure our code is reproducible and professional, we adhere to the following:
-* **Environment:** Hybrid R/Python environment using `here::here()` for paths.
-* **Styling:** Quarto documents using `theme: journal` and `df-print: paged`.
-* **Visuals:** * <img src="https://via.placeholder.com/15/00534B/000000?text=+" width="15"> **Success/Good:** `#00534B` (MasterControl Teal)
-    * <img src="https://via.placeholder.com/15/F05627/000000?text=+" width="15"> **Risk/Bad:** `#F05627` (Alert Orange)
-* [cite_start]**AI Policy:** AI use is encouraged to accelerate work, but all outputs must be sense-checked for "Predictive Quality"[cite: 31, 32, 34].
+## 📅 Mission Milestones (Hard Deadlines)
+| Phase | Milestone | Hard Deadline |
+| :---: | :--- | :--- |
+| 🟢 | **Business Problem Statement** | **Jan 28** |
+| 🟡 | **EDA Group Notebook** | **Feb 18** |
+| ⚪ | **Modeling Notebook** | **Mar 18** |
+| ⚪ | **Practice Presentation** | **Apr 05** |
+| ⚪ | **Final Sponsor Delivery** | **Apr 08/15** |
+| ⚪ | **Portfolio & Peer Eval** | **Apr 19** |
 
 ---
 
-## 👥 The Bullpen
-| Member | Primary Role | Portfolio Link |
-| :--- | :--- | :--- |
-| **Thomas Beck** | [Primary Role] | [View Portfolio] |
-| **[Partner 2]** | [Primary Role] | [View Portfolio] |
-| **[Partner 3]** | [Primary Role] | [View Portfolio] |
+## ⚙️ Developer Tooling & Automation
+*Standardized configs to ensure code runs on all machines instantly.*
+
+### 1. Notebook Standards & The "Golden" YAML
+**Primary Directive:** Quarto (`.qmd`) is the required notebook format for this project. Unlike standard `.Rmd` or `.ipynb` files, `.qmd` provides a unified engine that supports both R and Python seamlessly. 
+
+The YAML header below is configured to be **polyglot-friendly**. It ensures that whether the notebook uses the `knitr` engine (R) or the `jupyter` engine (Python), the HTML and PDF outputs remain identical in professional formatting and functionality.
+
+Copy this into the top of every `.qmd` file:
+
+---
+title: 
+subtitle: 
+date: "Spring 2026"
+format:
+  html:
+    theme: journal
+    toc: true
+    toc-depth: 3
+    toc-float: true
+    number-sections: false
+    code-fold: true
+    code-tools: true
+    df-print: paged
+    highlight-style: github
+  pdf:
+    documentclass: article
+    geometry:
+      - margin=1in
+    toc: true
+    number-sections: false
+    colorlinks: true
+    mainfont: "Arial"
+    sansfont: "Arial"
+    monofont: "Courier New"
+editor: visual
+---
+
+### 2. Branding & Palette
+[TBD but this is a nice place to standardize a project palette with hex codes etc]
+
+### 3. Efficiency Shortcuts
+* **Track Changes:** View the real-time [Audit Trail](../../commits/main) of model edits.
+* **Task Management:** Assign work and track progress via [Milestones](../../milestones).
+* **Reproducibility:** Always use `here::here()` for data paths.
 
 ---
 
-## 📂 Repository Architecture
+## 📂 System Architecture
 ```text
-├── data/               # RAW data 
+├── data/               # RAW data (Local only - Git ignored)
 ├── notebooks/
-│   ├── final/          # Polished group deliverables
-[cite_start]│   └── individual/     # Weekly scratchpads for portfolio building [cite: 38, 39]
-├── output/             # Finalized plots, tables, and renders
-[cite_start]├── docs/               # Syllabus[cite: 1], research, and meeting notes
-└── README.md           # This Dashboard
+│   ├── final/          # Shared Group Deliverables (.qmd)
+│   └── individual/     # Individual "Sandboxes" for end-of-term portfolio
+├── output/             # Exported .csv results and .png plots
+├── docs/               # Meeting notes and sponsor requirements
+└── README.md           # This Hub
 ```
 
 ---
-> **Track Changes:** View our real-time [Commit History](https://github.com/[user]/[repo]/commits/main) to see the audit trail of all model iterations.
+> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
+
+---
+> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
