@@ -1,4 +1,4 @@
-﻿# 🏢 MasterControl Capstone: Command Center
+﻿# MSBA Capstone - Group Project Dashboard
 **MSBA IS 6813 | Spring 2026**
 
 [![Project Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)]()
