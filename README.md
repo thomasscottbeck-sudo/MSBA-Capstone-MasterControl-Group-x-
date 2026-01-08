@@ -31,7 +31,7 @@
 ## ⚙️ Developer Tooling & Automation
 
 ### 1. Notebook Standards & The "Golden" YAML
-**Primary Directive:** Quarto ('.qmd') is the required notebook format. It provides a unified engine for both R ('knitr') and Python ('jupyter').
+**Primary Directive:** Quarto (`.qmd`) is the required notebook format. It provides a unified engine for both R (`knitr`) and Python (`jupyter`).
 
 <details>
 <summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
@@ -39,7 +39,7 @@
 
 Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
 
-`yaml
+```yaml
 ---
 title: 
 subtitle: 
@@ -67,25 +67,23 @@ format:
     monofont: "Courier New"
 editor: visual
 ---
-`
+```
 
 </details>
 
 ### 2. Foolproof Data Loading (The "Here" Rule)
-**Strict Rule:** Never use absolute paths (e.g., 'C:/Users/Thomas/...').
+**Strict Rule:** Never use absolute paths (e.g., `C:/Users/Thomas/...`).
 To ensure code runs on every team member's machine instantly without changing paths:
 
-1.  **Save Raw Data:** Place all raw CSVs/Excel files in your local 'data/' folder.
-2.  **Load Data:** Use the 'here' library to detect the project root automatically.
+1.  **Save Raw Data:** Place all raw CSVs/Excel files in your local `data/` folder.
+2.  **Load Data:** Use the `here` library to detect the project root automatically.
 
-`
-# ✅ CORRECT: Works on Mac, Windows, and Linux automatically
+```r
 library(here)
-df <- read.csv(here::here("data", "application_train.csv"))
-
-# ❌ INCORRECT: Breaks on other computers
-df <- read.csv("C:/Users/Thomas/Repos/Project/data/application_train.csv")
-`
+# This automatically finds the project root (where .git is)
+# Then looks inside the "data" folder for your file
+df <- read.csv(here::here("data", "your_filename.csv"))
+```
 
 ### 3. Efficiency Shortcuts
 * **Track Changes:** View the real-time [Audit Trail](../../commits/main).
@@ -96,7 +94,7 @@ df <- read.csv("C:/Users/Thomas/Repos/Project/data/application_train.csv")
 ## 🧠 Repository Architecture & Usage Flow
 *Visual map of how files, data, and code interact within this repository.*
 
-`mermaid
+```mermaid
 graph TD
     %% Nodes
     Data(📂 data/ <br/> 🔒 Local Only <br/> <i>Raw CSVs</i>)
@@ -117,10 +115,10 @@ graph TD
     style NB_Fin fill:#d4edda,stroke:#155724,stroke-width:2px
     style NB_Ind fill:#fff3cd,stroke:#856404,stroke-width:2px
     style Out fill:#e2e3e5,stroke:#383d41,stroke-width:2px
-`
+```
 
 ## 📂 Physical Directory Structure
-`	ext
+```text
 ├── data/               # RAW data (Local only - Git ignored)
 ├── notebooks/
 │   ├── 01_Business_Problem/
@@ -131,7 +129,7 @@ graph TD
 ├── output/             # Exported .csv results and .png plots
 ├── docs/               # Meeting notes and sponsor requirements
 └── README.md           # This Hub
-`
+```
 
 ---
 
@@ -143,4 +141,4 @@ graph TD
 | **Max Ridgeway** | [TBD] | [TBD] | +1 (801) 597-3824 |
 
 ---
-> **Lead Architect Note:** Before starting any work session, run git pull to sync the latest model changes from the team.
+> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
