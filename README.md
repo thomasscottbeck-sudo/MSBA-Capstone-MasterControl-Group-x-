@@ -1,4 +1,4 @@
-# 🏢 MasterControl Capstone: Command Center
+﻿# 🏢 MasterControl Capstone: Command Center
 **MSBA IS 6813 | Spring 2026**
 
 [![Project Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)]()
@@ -8,7 +8,7 @@
 ---
 
 ## 🛠️ Functional Hub
-| [📋 Deliverable Specs](./Group%20Docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./Group%20Docs/Sponsor_QA.md) | [🌐 Live Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-x/) |
+| [📋 Deliverable Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Live Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-Group-X/) |
 | :---: | :---: | :---: | :---: |
 
 ---
@@ -28,14 +28,14 @@
 ## ⚙️ Developer Tooling & Automation
 
 ### 1. Notebook Standards & The "Golden" YAML
-**Primary Directive:** Quarto (`.qmd`) is the required notebook format. It provides a unified engine for both R (`knitr`) and Python (`jupyter`).
+**Primary Directive:** Quarto ('.qmd') is the required notebook format. It provides a unified engine for both R ('knitr') and Python ('jupyter').
 
 <details>
 <summary><b>🔻 CLICK TO EXPAND: Copy the Golden YAML Header</b></summary>
 <br>
 Copy this block exactly into the top of every <code>.qmd</code> file to ensure HTML/PDF parity:
 
-```yaml
+`yaml
 ---
 title: 
 subtitle: 
@@ -63,20 +63,20 @@ format:
     monofont: "Courier New"
 editor: visual
 ---
-```
+`
 </details>
 
 ### 2. Efficiency Shortcuts
 * **Track Changes:** View the real-time [Audit Trail](../../commits/main).
 * **Task Management:** Track progress via [Milestones](../../milestones).
-* **Reproducibility:** Always use `here::here("data", "filename.csv")`.
+* **Reproducibility:** Always use here::here("data", "filename.csv").
 
 ---
 
 ## 🧠 Data Pipeline Architecture (Mermaid.js)
 *Visual representation of the project workflow. GitHub renders this natively.*
 
-```mermaid
+`mermaid
 graph LR;
     A[📂 Raw Data <br/> ./data] -->|Cleaner.R| B(🧹 Tidy Data);
     B -->|EDA.qmd| C{🔍 Analysis};
@@ -85,18 +85,18 @@ graph LR;
     D -->|Quarto| F[📄 PDF Report];
     style A fill:#f9f,stroke:#333,stroke-width:2px
     style E fill:#bbf,stroke:#333,stroke-width:2px
-```
+`
 
 ## 📂 Physical Directory Structure
-```text
+`	ext
 ├── data/               # RAW data (Local only - Git ignored)
 ├── notebooks/
 │   ├── final/          # Shared Group Deliverables (.qmd)
 │   └── individual/     # Individual "Sandboxes" for portfolio
 ├── output/             # Exported .csv results and .png plots
-├── Group Docs/         # Meeting notes and sponsor requirements
+├── docs/               # Meeting notes and sponsor requirements
 └── README.md           # This Hub
-```
+`
 
 ---
-> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
+> **Lead Architect Note:** Before starting any work session, run git pull to sync the latest model changes from the team.

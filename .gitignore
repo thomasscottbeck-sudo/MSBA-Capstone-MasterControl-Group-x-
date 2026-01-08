@@ -1,20 +1,17 @@
-# Data files
+﻿# MasterControl Project Git Ignore
+# 1. Ignore Data Files (CRITICAL SECURITY)
 data/*.csv
 data/*.xlsx
 data/*.zip
 
-# R-specific
+# 2. Ignore R/Quarto Cache & System Files
 .Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+/.quarto/
+/_site/
 
-# Quarto
-.quarto/
-
-# System files
+# 3. Ignore OS Junk
 .DS_Store
-.Rprofile
-*-Ex.R
-
-# --- 3. PYTHON & JUPYTER ---
-__pycache__/
-*.py[cod]
-
+Thumbs.db
