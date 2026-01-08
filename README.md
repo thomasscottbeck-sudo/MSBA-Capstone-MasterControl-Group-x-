@@ -9,7 +9,7 @@
 
 ## 🛠️ Functional Hub & Assignments
 
-| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
+| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 Source Code](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Assignments** 📂 | [📂 01 Problem](./notebooks/01_Business_Problem/) | [📂 02 EDA](./notebooks/02_EDA/) | [📂 03 Modeling](./notebooks/03_Modeling/) | [📂 04 Presentation](./notebooks/04_Presentation/) | 🚫 |
 
@@ -63,19 +63,55 @@ editor: visual
 ---
 ```
 
-### 2. Foolproof Data Loading (The "Here" Rule)
-**Strict Rule:** Never use absolute paths. Use `here::here()` to detect the project root automatically.
+### 2. Standard Setup & Parallel Processing (Copy-Paste)
+**Rule:** Use these blocks to initialize your environment. They include **Dynamic Core Selection** to maximize performance on any machine without crashing it (N-1 logic).
 
+#### 🟢 R Setup (Tidyverse + Parallel)
 ```r
-library(here)
-# This automatically finds the project root (where .git is)
-# Then looks inside the "data" folder for your file
-df <- read.csv(here::here("data", "your_filename.csv"))
+# Load Core Packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, here, parallel, doParallel)
+
+# Dynamic Parallel Processing (Detects your hardware)
+# Leaves 1 core free for the OS to prevent freezing
+num_cores <- parallel::detectCores(logical = FALSE)
+cl <- makeCluster(num_cores - 1)
+registerDoParallel(cl)
+
+print(paste("Cluster active with", num_cores - 1, "cores."))
 ```
 
-### 3. Efficiency Shortcuts
-* **Track Changes:** View the real-time [Audit Trail](../../commits/main).
-* **Task Management:** Track progress via [Milestones](../../milestones).
+#### 🔵 Python Setup (Pandas + Multiprocessing)
+```python
+import pandas as pd
+import numpy as np
+import multiprocessing
+from pyprojroot import here
+
+# Dynamic Core Selector
+# Use 'n_jobs' in Scikit-Learn models (e.g., n_jobs=n_jobs)
+n_jobs = multiprocessing.cpu_count() - 1
+
+print(f"Parallel processing enabled: {n_jobs} cores available.")
+```
+
+### 3. Foolproof Data Loading (Polyglot Paths)
+**Strict Rule:** Never use absolute paths (e.g., `C:/Users/Thomas/...`). Use these project-aware path finders.
+
+**For R (using `here`):**
+```r
+library(here)
+# Automatically finds the project root (where .git is)
+df <- read.csv(here::here("data", "application_train.csv"))
+```
+
+**For Python (using `pyprojroot`):**
+```python
+from pyprojroot import here
+# Automatically finds the project root
+path = here("data/application_train.csv")
+df = pd.read_csv(path)
+```
 
 ---
 
@@ -117,4 +153,4 @@ df <- read.csv(here::here("data", "your_filename.csv"))
 | **Max Ridgeway** | [TBD] | [TBD] | +1 (801) 597-3824 |
 
 ---
-> **Lead Architect Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
+> **Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
