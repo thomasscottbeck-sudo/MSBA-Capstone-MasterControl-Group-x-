@@ -15,3 +15,7 @@ data/*.zip
 # 3. Ignore OS Junk
 .DS_Store
 Thumbs.db
+
+# 4. Local User, GPT & AI Tool Context
+Custom GPT Uploads/
+.claude/

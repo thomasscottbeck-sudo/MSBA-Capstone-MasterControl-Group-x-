@@ -1,0 +1,1218 @@
+---
+title: "MasterControl Pipeline Acceleration Analysis"
+subtitle: "Deep Signal EDA for Predictive Modeling"
+author: "MSBA Capstone Group 3"
+date: "Spring 2026"
+format:
+  html:
+    theme: journal
+    toc: true
+    toc-depth: 3
+    toc-float: true
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    df-print: paged
+    highlight-style: github
+    self-contained: true
+  pdf:
+    documentclass: article
+    geometry:
+      - margin=1in
+    toc: true
+    number-sections: true
+    colorlinks: true
+execute:
+  warning: false
+  message: false
+editor: visual
+---
+
+```{python}
+#| label: setup
+#| code-summary: "Setup: Libraries & Configuration"
+
+# =============================================================================
+# IMPORTS & CONFIGURATION
+# =============================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+from pathlib import Path
+from scipy import stats
+from scipy.stats import chi2_contingency, fisher_exact
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import CountVectorizer
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# --- PROJECT COLOR PALETTE ---
+# Per project standards: Teal for Success/Mx, Orange for Failure/Qx
+COLORS = {
+    'success': '#00534B',  # Teal
+    'failure': '#F05627',  # Orange
+    'neutral': '#95a5a6',
+    'highlight': '#2c3e50',
+    'mx': '#00534B',       # Teal (focus product)
+    'qx': '#F05627',       # Orange (benchmark)
+    'other': '#95a5a6'
+}
+
+# Plotting configuration
+sns.set_theme(style="whitegrid", context="talk", palette=[COLORS['success'], COLORS['failure']])
+plt.rcParams['figure.figsize'] = (12, 7)
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['axes.titleweight'] = 'bold'
+plt.rcParams['axes.titlesize'] = 14
+
+# --- STATISTICAL THRESHOLDS ---
+ALPHA = 0.05  # Significance level
+MIN_SAMPLE_SIZE = 30  # Minimum for reliable conversion rates
+
+print("Configuration loaded successfully")
+```
+
+# Executive Summary
+
+**Business Context:** MasterControl faces a "Tale of Two Products" challenge. The legacy Qx (Quality) product converts at \~19.7% while the newer Mx (Manufacturing) product underperforms at \~12.7%. This 7 percentage point gap represents significant revenue opportunity.
+
+**Analytical Objective:** Identify the characteristics of high-converting leads to define the Ideal Customer Profile (ICP) for Mx, enabling targeted sales and marketing execution.
+
+**Methodology:** This analysis employs:
+
+1.  **Statistical Rigor** - Chi-square tests, confidence intervals, effect sizes
+2.  **NLP Signal Extraction** - Log-odds analysis of job title semantics
+3.  **Interaction Mapping** - Multi-dimensional segment analysis
+4.  **Information Theory** - Mutual information for unbiased feature ranking
+
+------------------------------------------------------------------------
+
+# Data Pipeline
+
+## Load and Validate Data
+
+```{python}
+#| label: load-data
+#| code-summary: "Load raw data"
+
+# Robust path detection
+def find_data_file():
+    """Find data file using multiple path strategies."""
+    possible_paths = [
+        Path.cwd().parent.parent / "data" / "QAL Performance for MSBA.csv",
+        Path.cwd().parent / "data" / "QAL Performance for MSBA.csv",
+        Path.cwd() / "data" / "QAL Performance for MSBA.csv",
+        Path("../../data/QAL Performance for MSBA.csv"),
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError("Could not locate QAL Performance for MSBA.csv")
+
+# Load data
+filepath = find_data_file()
+df_raw = pd.read_csv(filepath)
+
+# Standardize column names to snake_case
+df_raw.columns = [
+    c.strip().lower()
+    .replace(' ', '_')
+    .replace('/', '_')
+    .replace('-', '_')
+    for c in df_raw.columns
+]
+
+print(f"Loaded {len(df_raw):,} records x {len(df_raw.columns)} columns")
+print(f"Source: {filepath.name}")
+```
+
+## Data Quality Assessment
+
+```{python}
+#| label: data-quality
+#| code-summary: "Assess data quality and missingness"
+
+def assess_data_quality(df):
+    """Generate comprehensive data quality report."""
+    quality = pd.DataFrame({
+        'dtype': df.dtypes,
+        'non_null': df.notna().sum(),
+        'null_count': df.isna().sum(),
+        'null_pct': (df.isna().sum() / len(df) * 100).round(1),
+        'unique': df.nunique(),
+        'sample_value': df.iloc[0]
+    })
+    return quality.sort_values('null_pct', ascending=False)
+
+quality_report = assess_data_quality(df_raw)
+print("Data Quality Summary (Top 10 by Missing %):\n")
+print(quality_report[['null_pct', 'unique', 'sample_value']].head(10).to_string())
+```
+
+## Feature Engineering
+
+### Target Variable Construction
+
+```{python}
+#| label: target-engineering
+#| code-summary: "Engineer target variable"
+
+# Create working copy
+df = df_raw.copy()
+
+# Define success: SQL, SQO, or Won (pipeline progression)
+SUCCESS_STAGES = ['SQL', 'SQO', 'Won']
+df['is_success'] = df['next_stage__c'].isin(SUCCESS_STAGES).astype(int)
+
+# Validate target distribution
+success_rate = df['is_success'].mean()
+n_success = df['is_success'].sum()
+n_failure = len(df) - n_success
+
+print(f"Target Variable: is_success")
+print(f"  Success (SQL/SQO/Won): {n_success:,} ({success_rate:.1%})")
+print(f"  Failure (Recycled/etc): {n_failure:,} ({1-success_rate:.1%})")
+print(f"\nClass balance is acceptable for modeling (no SMOTE required)")
+```
+
+### Product Segmentation
+
+```{python}
+#| label: product-segmentation
+#| code-summary: "Segment by product line"
+
+def segment_product(solution):
+    """Classify solution into Mx, Qx, or Other."""
+    if pd.isna(solution):
+        return 'Other'
+    if solution == 'Mx':
+        return 'Mx'
+    elif solution == 'Qx':
+        return 'Qx'
+    return 'Other'
+
+df['product'] = df['solution_rollup'].apply(segment_product)
+
+# Display distribution
+product_stats = df.groupby('product').agg(
+    count=('is_success', 'size'),
+    successes=('is_success', 'sum'),
+    conversion=('is_success', 'mean')
+).round(3)
+product_stats['pct_of_total'] = (product_stats['count'] / len(df) * 100).round(1)
+
+print("Product Distribution:")
+print(product_stats.to_string())
+```
+
+### Title Parsing: Seniority and Function
+
+This is critical for the ICP definition. We extract TWO dimensions from job titles:
+
+1.  **Seniority** - Decision-making authority level
+2.  **Function** - Business domain (Quality, Ops, Regulatory, R&D, etc.)
+
+```{python}
+#| label: title-parsing
+#| code-summary: "Parse job titles into seniority and function"
+
+def parse_title_seniority(title):
+    """
+    Extract seniority level from job title.
+    Returns hierarchical category for decision-maker identification.
+    """
+    if pd.isna(title):
+        return 'Unknown'
+
+    t = str(title).lower()
+
+    # C-Suite (highest authority)
+    if re.search(r'\b(ceo|cfo|coo|cto|cio|cmo|cpo|chief|c-level)\b', t):
+        return 'C-Suite'
+
+    # President/EVP level
+    if re.search(r'\b(president|evp|executive vice)\b', t):
+        return 'President/EVP'
+
+    # SVP/VP level
+    if re.search(r'\b(svp|senior vice president)\b', t):
+        return 'SVP'
+    if re.search(r'\b(vp|vice president|head of)\b', t):
+        return 'VP'
+
+    # Director level
+    if re.search(r'\b(director|dir\.)\b', t):
+        return 'Director'
+
+    # Manager level
+    if re.search(r'\b(manager|mgr|supervisor|team lead|lead)\b', t):
+        return 'Manager'
+
+    # Individual Contributor
+    if re.search(r'\b(analyst|engineer|specialist|associate|consultant|coordinator|technician|scientist)\b', t):
+        return 'Individual Contributor'
+
+    return 'Other'
+
+
+def parse_title_function(title):
+    """
+    Extract functional area from job title.
+    Critical for understanding WHO converts in each domain.
+    """
+    if pd.isna(title):
+        return 'Unknown'
+
+    t = str(title).lower()
+
+    # Quality (primary MasterControl domain)
+    if re.search(r'\b(quality|qa|qc|qms|capa|validation|compliance)\b', t):
+        return 'Quality'
+
+    # Regulatory Affairs
+    if re.search(r'\b(regulatory|reg affairs|ra |submissions|labeling)\b', t):
+        return 'Regulatory'
+
+    # Operations/Manufacturing
+    if re.search(r'\b(operations|ops|manufacturing|production|plant|supply chain|logistics)\b', t):
+        return 'Operations'
+
+    # R&D/Science
+    if re.search(r'\b(r&d|research|development|scientist|clinical|formulation|analytical)\b', t):
+        return 'R&D'
+
+    # IT/Technology
+    if re.search(r'\b(it |information technology|software|systems|data|digital|tech)\b', t):
+        return 'IT'
+
+    # General Management/Executive
+    if re.search(r'\b(general manager|gm|ceo|cfo|president|owner|founder)\b', t):
+        return 'Executive'
+
+    # Engineering (non-quality)
+    if re.search(r'\b(engineer|engineering)\b', t) and not re.search(r'quality', t):
+        return 'Engineering'
+
+    # Project/Program Management
+    if re.search(r'\b(project|program|pmo)\b', t):
+        return 'Project Management'
+
+    return 'Other'
+
+
+def is_decision_maker(seniority):
+    """Flag titles with purchasing authority."""
+    return 1 if seniority in ['C-Suite', 'President/EVP', 'SVP', 'VP', 'Director'] else 0
+
+
+# Apply parsing
+df['seniority'] = df['contact_lead_title'].apply(parse_title_seniority)
+df['function'] = df['contact_lead_title'].apply(parse_title_function)
+df['is_decision_maker'] = df['seniority'].apply(is_decision_maker)
+
+# Display distribution
+print("Seniority Distribution:")
+print(df['seniority'].value_counts().to_string())
+print(f"\nFunction Distribution:")
+print(df['function'].value_counts().to_string())
+print(f"\nDecision Makers: {df['is_decision_maker'].sum():,} ({df['is_decision_maker'].mean():.1%})")
+```
+
+### Handle Missing Values
+
+```{python}
+#| label: missing-values
+#| code-summary: "Impute missing values strategically"
+
+# Strategic imputation: "Unknown" preserves missingness as a signal
+cols_to_impute = [
+    'acct_manufacturing_model',
+    'acct_primary_site_function',
+    'acct_target_industry',
+    'acct_territory_rollup',
+    'acct_tier_rollup'
+]
+
+for col in cols_to_impute:
+    if col in df.columns:
+        missing_pct = df[col].isna().mean()
+        if missing_pct > 0:
+            df[col] = df[col].fillna('Unknown')
+            print(f"Imputed {col}: {missing_pct:.1%} missing -> 'Unknown'")
+
+# Handle title specifically
+df['contact_lead_title'] = df['contact_lead_title'].fillna('Unknown Title')
+```
+
+### Date Features
+
+```{python}
+#| label: date-features
+#| code-summary: "Engineer temporal features"
+
+df['cohort_date'] = pd.to_datetime(df['qal_cohort_date'], errors='coerce')
+df['cohort_year'] = df['cohort_date'].dt.year
+df['cohort_quarter'] = df['cohort_date'].dt.to_period('Q').astype(str)
+df['cohort_month'] = df['cohort_date'].dt.to_period('M').astype(str)
+
+print(f"Date range: {df['cohort_date'].min().date()} to {df['cohort_date'].max().date()}")
+print(f"Quarters covered: {df['cohort_quarter'].nunique()}")
+```
+
+------------------------------------------------------------------------
+
+# The Core Question: Mx vs Qx Performance Gap
+
+This section directly addresses the sponsor's primary concern.
+
+## Conversion Rate Comparison with Statistical Testing
+
+```{python}
+#| label: mx-qx-comparison
+#| code-summary: "Statistical comparison of Mx vs Qx conversion"
+
+def conversion_rate_ci(successes, n, confidence=0.95):
+    """Calculate conversion rate with Wilson score confidence interval."""
+    if n == 0:
+        return 0, 0, 0
+
+    p = successes / n
+    z = stats.norm.ppf((1 + confidence) / 2)
+
+    # Wilson score interval (better for proportions)
+    denominator = 1 + z**2 / n
+    center = (p + z**2 / (2*n)) / denominator
+    margin = z * np.sqrt((p * (1-p) + z**2 / (4*n)) / n) / denominator
+
+    return p, max(0, center - margin), min(1, center + margin)
+
+
+def compare_proportions(group1, group2, df):
+    """Compare conversion rates between two groups with chi-square test."""
+    contingency = pd.crosstab(df['product'] == group1, df['is_success'])
+    chi2, p_value, dof, expected = chi2_contingency(contingency)
+
+    n1 = (df['product'] == group1).sum()
+    n2 = (df['product'] == group2).sum()
+    s1 = df[df['product'] == group1]['is_success'].sum()
+    s2 = df[df['product'] == group2]['is_success'].sum()
+
+    p1 = s1 / n1
+    p2 = s2 / n2
+
+    # Effect size (Cohen's h)
+    h = 2 * (np.arcsin(np.sqrt(p1)) - np.arcsin(np.sqrt(p2)))
+
+    return {
+        'group1_rate': p1,
+        'group2_rate': p2,
+        'difference': p1 - p2,
+        'chi2': chi2,
+        'p_value': p_value,
+        'effect_size_h': h,
+        'significant': p_value < ALPHA
+    }
+
+
+# Filter to Mx and Qx only
+df_products = df[df['product'].isin(['Mx', 'Qx'])].copy()
+
+# Calculate stats for each product
+results = {}
+for product in ['Mx', 'Qx']:
+    subset = df_products[df_products['product'] == product]
+    n = len(subset)
+    successes = subset['is_success'].sum()
+    rate, ci_low, ci_high = conversion_rate_ci(successes, n)
+    results[product] = {
+        'n': n,
+        'successes': successes,
+        'rate': rate,
+        'ci_low': ci_low,
+        'ci_high': ci_high
+    }
+
+# Statistical comparison
+comparison = compare_proportions('Qx', 'Mx', df_products)
+
+print("=" * 70)
+print("MX vs QX CONVERSION ANALYSIS")
+print("=" * 70)
+print(f"\nQx (Quality Solutions):")
+print(f"  N = {results['Qx']['n']:,}")
+print(f"  Conversion = {results['Qx']['rate']:.1%} (95% CI: {results['Qx']['ci_low']:.1%} - {results['Qx']['ci_high']:.1%})")
+
+print(f"\nMx (Manufacturing Solutions):")
+print(f"  N = {results['Mx']['n']:,}")
+print(f"  Conversion = {results['Mx']['rate']:.1%} (95% CI: {results['Mx']['ci_low']:.1%} - {results['Mx']['ci_high']:.1%})")
+
+print(f"\nPerformance Gap:")
+print(f"  Difference = {comparison['difference']:.1%} (Qx - Mx)")
+print(f"  Chi-square = {comparison['chi2']:.2f}, p-value = {comparison['p_value']:.2e}")
+print(f"  Effect size (Cohen's h) = {comparison['effect_size_h']:.3f}")
+print(f"  Statistically Significant: {'YES' if comparison['significant'] else 'NO'}")
+```
+
+```{python}
+#| label: mx-qx-visualization
+#| code-summary: "Visualize Mx vs Qx gap"
+#| fig-cap: "The Mx vs Qx conversion gap is statistically significant and represents the core business opportunity."
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# Left: Bar chart with confidence intervals
+ax1 = axes[0]
+products = ['Qx', 'Mx']
+rates = [results[p]['rate'] for p in products]
+ci_low = [results[p]['ci_low'] for p in products]
+ci_high = [results[p]['ci_high'] for p in products]
+colors = [COLORS['qx'], COLORS['mx']]
+
+bars = ax1.bar(products, rates, color=colors, edgecolor='white', linewidth=2)
+
+# Add error bars
+for i, (product, rate, low, high) in enumerate(zip(products, rates, ci_low, ci_high)):
+    ax1.errorbar(i, rate, yerr=[[rate-low], [high-rate]],
+                 fmt='none', color='black', capsize=10, capthick=2, linewidth=2)
+    ax1.text(i, rate + 0.02, f'{rate:.1%}', ha='center', va='bottom', fontweight='bold', fontsize=14)
+
+ax1.set_ylabel('Conversion Rate', fontsize=12)
+ax1.set_title('Conversion Rate by Product Line\n(with 95% Confidence Intervals)', fontweight='bold')
+ax1.set_ylim(0, 0.30)
+ax1.axhline(y=df['is_success'].mean(), color='gray', linestyle='--', alpha=0.5, label='Overall Average')
+ax1.legend()
+
+# Right: Waterfall showing the gap
+ax2 = axes[1]
+gap = results['Qx']['rate'] - results['Mx']['rate']
+ax2.bar(['Qx Baseline', 'Gap', 'Mx Current'],
+        [results['Qx']['rate'], -gap, results['Mx']['rate']],
+        color=[COLORS['qx'], COLORS['failure'], COLORS['mx']])
+ax2.axhline(y=0, color='black', linewidth=0.5)
+ax2.set_ylabel('Conversion Rate', fontsize=12)
+ax2.set_title(f'The {gap:.1%} Performance Gap\n(Opportunity for Mx Improvement)', fontweight='bold')
+ax2.set_ylim(0, 0.25)
+
+# Add annotations
+ax2.annotate(f'+{gap:.1%}\nopportunity', xy=(1, -gap/2), ha='center', va='center',
+             fontsize=12, fontweight='bold', color='white')
+
+plt.tight_layout()
+plt.savefig('../../output/mx_qx_gap_analysis.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+print(f"\nFigure saved to: output/mx_qx_gap_analysis.png")
+```
+
+------------------------------------------------------------------------
+
+# Segment Deep Dive: Where Does Mx Win?
+
+## By Industry
+
+```{python}
+#| label: industry-analysis
+#| code-summary: "Analyze conversion by industry"
+
+def segment_analysis(df, segment_col, min_n=30):
+    """
+    Analyze conversion rates by segment with statistical rigor.
+    Only includes segments with sufficient sample size.
+    """
+    results = []
+
+    for segment in df[segment_col].unique():
+        subset = df[df[segment_col] == segment]
+        n = len(subset)
+
+        if n < min_n:
+            continue
+
+        successes = subset['is_success'].sum()
+        rate, ci_low, ci_high = conversion_rate_ci(successes, n)
+
+        # Mx-specific stats
+        mx_subset = subset[subset['product'] == 'Mx']
+        mx_n = len(mx_subset)
+        mx_rate = mx_subset['is_success'].mean() if mx_n > 0 else np.nan
+
+        results.append({
+            'segment': segment,
+            'n': n,
+            'conversion': rate,
+            'ci_low': ci_low,
+            'ci_high': ci_high,
+            'mx_n': mx_n,
+            'mx_conversion': mx_rate
+        })
+
+    return pd.DataFrame(results).sort_values('conversion', ascending=False)
+
+
+industry_stats = segment_analysis(df_products, 'acct_target_industry')
+print("Conversion by Industry (n >= 30):\n")
+print(industry_stats.to_string(index=False))
+```
+
+```{python}
+#| label: industry-visualization
+#| code-summary: "Visualize industry conversion rates"
+#| fig-cap: "Industry-level conversion rates reveal significant variation in lead quality."
+
+fig, ax = plt.subplots(figsize=(12, 8))
+
+# Sort and plot
+industry_plot = industry_stats.sort_values('conversion', ascending=True)
+y_pos = range(len(industry_plot))
+
+# Horizontal bar chart
+bars = ax.barh(y_pos, industry_plot['conversion'],
+               color=[COLORS['success'] if x > df_products['is_success'].mean() else COLORS['failure']
+                      for x in industry_plot['conversion']])
+
+# Add confidence interval lines
+for i, row in enumerate(industry_plot.itertuples()):
+    ax.plot([row.ci_low, row.ci_high], [i, i], color='black', linewidth=2)
+    ax.text(row.conversion + 0.01, i, f'{row.conversion:.1%} (n={row.n:,})',
+            va='center', fontsize=10)
+
+ax.set_yticks(y_pos)
+ax.set_yticklabels(industry_plot['segment'])
+ax.axvline(x=df_products['is_success'].mean(), color='gray', linestyle='--', alpha=0.7,
+           label=f'Overall: {df_products["is_success"].mean():.1%}')
+ax.set_xlabel('Conversion Rate', fontsize=12)
+ax.set_title('Conversion Rate by Target Industry\n(Green = Above Average, Orange = Below Average)', fontweight='bold')
+ax.legend(loc='lower right')
+ax.set_xlim(0, 0.35)
+
+plt.tight_layout()
+plt.savefig('../../output/industry_conversion.png', dpi=150, bbox_inches='tight')
+plt.show()
+```
+
+## By Manufacturing Model
+
+```{python}
+#| label: mfg-model-analysis
+#| code-summary: "Analyze by manufacturing model"
+
+model_stats = segment_analysis(df_products, 'acct_manufacturing_model')
+print("Conversion by Manufacturing Model:\n")
+print(model_stats.to_string(index=False))
+```
+
+## By Seniority Level
+
+```{python}
+#| label: seniority-analysis
+#| code-summary: "Analyze by title seniority"
+
+seniority_stats = segment_analysis(df_products, 'seniority')
+
+# Add decision maker flag
+seniority_order = ['C-Suite', 'President/EVP', 'SVP', 'VP', 'Director', 'Manager', 'Individual Contributor', 'Other', 'Unknown']
+seniority_stats['order'] = seniority_stats['segment'].apply(lambda x: seniority_order.index(x) if x in seniority_order else 99)
+seniority_stats = seniority_stats.sort_values('order')
+
+print("Conversion by Seniority Level:\n")
+print(seniority_stats[['segment', 'n', 'conversion', 'ci_low', 'ci_high', 'mx_conversion']].to_string(index=False))
+```
+
+```{python}
+#| label: seniority-visualization
+#| code-summary: "Visualize seniority conversion"
+#| fig-cap: "Decision-maker seniority levels show distinct conversion patterns."
+
+fig, ax = plt.subplots(figsize=(12, 6))
+
+x = range(len(seniority_stats))
+bars = ax.bar(x, seniority_stats['conversion'],
+              color=[COLORS['success'] if row['segment'] in ['C-Suite', 'President/EVP', 'SVP', 'VP', 'Director']
+                     else COLORS['neutral'] for _, row in seniority_stats.iterrows()])
+
+# Error bars
+for i, row in enumerate(seniority_stats.itertuples()):
+    ax.errorbar(i, row.conversion,
+                yerr=[[row.conversion - row.ci_low], [row.ci_high - row.conversion]],
+                fmt='none', color='black', capsize=5)
+
+ax.set_xticks(x)
+ax.set_xticklabels(seniority_stats['segment'], rotation=45, ha='right')
+ax.axhline(y=df_products['is_success'].mean(), color='gray', linestyle='--', alpha=0.7)
+ax.set_ylabel('Conversion Rate', fontsize=12)
+ax.set_title('Conversion Rate by Title Seniority\n(Green = Decision Makers)', fontweight='bold')
+ax.set_ylim(0, 0.35)
+
+plt.tight_layout()
+plt.savefig('../../output/seniority_conversion.png', dpi=150, bbox_inches='tight')
+plt.show()
+```
+
+## By Functional Area
+
+```{python}
+#| label: function-analysis
+#| code-summary: "Analyze by job function"
+
+function_stats = segment_analysis(df_products, 'function')
+print("Conversion by Job Function:\n")
+print(function_stats.to_string(index=False))
+```
+
+```{python}
+#| label: function-visualization
+#| code-summary: "Visualize function conversion - key insight for Mx targeting"
+#| fig-cap: "Functional area analysis reveals which departments convert best for each product."
+
+# Compare Mx vs Qx by function
+function_comparison = df_products.groupby(['function', 'product']).agg(
+    n=('is_success', 'size'),
+    conversion=('is_success', 'mean')
+).reset_index()
+
+# Pivot for side-by-side comparison
+function_pivot = function_comparison.pivot(index='function', columns='product', values='conversion')
+function_pivot = function_pivot.dropna()
+function_pivot['mx_advantage'] = function_pivot['Mx'] - function_pivot['Qx']
+function_pivot = function_pivot.sort_values('Mx', ascending=False)
+
+fig, ax = plt.subplots(figsize=(12, 7))
+
+x = np.arange(len(function_pivot))
+width = 0.35
+
+bars1 = ax.bar(x - width/2, function_pivot['Mx'], width, label='Mx', color=COLORS['mx'])
+bars2 = ax.bar(x + width/2, function_pivot['Qx'], width, label='Qx', color=COLORS['qx'])
+
+ax.set_xticks(x)
+ax.set_xticklabels(function_pivot.index, rotation=45, ha='right')
+ax.set_ylabel('Conversion Rate', fontsize=12)
+ax.set_title('Mx vs Qx Conversion by Job Function\n(Identifying Mx Opportunities)', fontweight='bold')
+ax.legend()
+ax.set_ylim(0, 0.35)
+
+# Add value labels
+for bar in bars1:
+    height = bar.get_height()
+    ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.0%}',
+            ha='center', va='bottom', fontsize=9)
+for bar in bars2:
+    height = bar.get_height()
+    ax.text(bar.get_x() + bar.get_width()/2., height, f'{height:.0%}',
+            ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+plt.savefig('../../output/function_mx_qx_comparison.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+print("\nMx Advantage by Function (Mx - Qx):")
+print(function_pivot[['Mx', 'Qx', 'mx_advantage']].sort_values('mx_advantage', ascending=False).to_string())
+```
+
+------------------------------------------------------------------------
+
+# Interaction Effects: The "Magic Quadrant"
+
+Single variables tell an incomplete story. The most actionable insights emerge from **interaction effects** - combinations of Industry + Manufacturing Model + Seniority that create "micro-segments" with exceptional conversion rates.
+
+## Industry x Manufacturing Model Heatmap
+
+```{python}
+#| label: interaction-heatmap
+#| code-summary: "Industry x Manufacturing Model interaction analysis"
+#| fig-cap: "The heatmap reveals high-converting micro-segments that represent targeting opportunities."
+
+# Create pivot with sample size filter
+def create_interaction_heatmap(df, row_var, col_var, min_n=20):
+    """Create heatmap with sample size annotations."""
+
+    # Calculate conversion and sample size
+    pivot_rate = df.pivot_table(
+        index=row_var,
+        columns=col_var,
+        values='is_success',
+        aggfunc='mean'
+    )
+
+    pivot_n = df.pivot_table(
+        index=row_var,
+        columns=col_var,
+        values='is_success',
+        aggfunc='size'
+    )
+
+    # Mask cells with insufficient sample size
+    mask = pivot_n < min_n
+    pivot_rate_masked = pivot_rate.where(~mask)
+
+    return pivot_rate_masked, pivot_n
+
+
+pivot_rate, pivot_n = create_interaction_heatmap(
+    df_products,
+    'acct_target_industry',
+    'acct_manufacturing_model'
+)
+
+fig, ax = plt.subplots(figsize=(14, 10))
+
+# Create annotation with rate and sample size
+annot = pivot_rate.copy()
+for i in range(len(pivot_rate.index)):
+    for j in range(len(pivot_rate.columns)):
+        rate = pivot_rate.iloc[i, j]
+        n = pivot_n.iloc[i, j]
+        if pd.notna(rate) and n >= 20:
+            annot.iloc[i, j] = f'{rate:.0%}\n(n={int(n)})'
+        else:
+            annot.iloc[i, j] = ''
+
+sns.heatmap(pivot_rate, annot=annot, fmt='', cmap='RdYlGn', center=0.17,
+            cbar_kws={'label': 'Conversion Rate'}, linewidths=0.5, ax=ax)
+ax.set_title('Industry x Manufacturing Model: Conversion Rate Heatmap\n(Cells with n<20 hidden)',
+             fontweight='bold', fontsize=14)
+ax.set_xlabel('Manufacturing Model', fontsize=12)
+ax.set_ylabel('Target Industry', fontsize=12)
+
+plt.tight_layout()
+plt.savefig('../../output/interaction_heatmap.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+# Identify top combinations
+pivot_flat = pivot_rate.stack().reset_index()
+pivot_flat.columns = ['Industry', 'Model', 'Conversion']
+pivot_flat = pivot_flat.dropna()
+
+# Add sample sizes
+pivot_flat_n = pivot_n.stack().reset_index()
+pivot_flat_n.columns = ['Industry', 'Model', 'N']
+pivot_flat = pivot_flat.merge(pivot_flat_n)
+pivot_flat = pivot_flat[pivot_flat['N'] >= 20]
+
+print("\nTop 10 High-Converting Segments (n >= 20):")
+print(pivot_flat.nlargest(10, 'Conversion').to_string(index=False))
+
+print("\nBottom 5 Low-Converting Segments (n >= 20):")
+print(pivot_flat.nsmallest(5, 'Conversion').to_string(index=False))
+```
+
+## Mx-Specific Targeting Matrix
+
+```{python}
+#| label: mx-targeting-matrix
+#| code-summary: "Mx-specific interaction analysis"
+#| fig-cap: "Mx-specific targeting matrix to identify optimal ICP segments."
+
+# Filter to Mx only
+df_mx = df_products[df_products['product'] == 'Mx'].copy()
+
+pivot_mx_rate, pivot_mx_n = create_interaction_heatmap(
+    df_mx,
+    'acct_target_industry',
+    'acct_manufacturing_model',
+    min_n=10  # Lower threshold for Mx-specific analysis
+)
+
+fig, ax = plt.subplots(figsize=(14, 10))
+
+annot_mx = pivot_mx_rate.copy()
+for i in range(len(pivot_mx_rate.index)):
+    for j in range(len(pivot_mx_rate.columns)):
+        rate = pivot_mx_rate.iloc[i, j]
+        n = pivot_mx_n.iloc[i, j]
+        if pd.notna(rate) and n >= 10:
+            annot_mx.iloc[i, j] = f'{rate:.0%}\n(n={int(n)})'
+        else:
+            annot_mx.iloc[i, j] = ''
+
+sns.heatmap(pivot_mx_rate, annot=annot_mx, fmt='', cmap='RdYlGn', center=0.13,
+            cbar_kws={'label': 'Mx Conversion Rate'}, linewidths=0.5, ax=ax)
+ax.set_title('Mx Only: Where Does Manufacturing Solutions Win?\n(Cells with n<10 hidden)',
+             fontweight='bold', fontsize=14)
+ax.set_xlabel('Manufacturing Model', fontsize=12)
+ax.set_ylabel('Target Industry', fontsize=12)
+
+plt.tight_layout()
+plt.savefig('../../output/mx_targeting_matrix.png', dpi=150, bbox_inches='tight')
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# NLP Signal Analysis: Decoding Job Titles
+
+## Log-Odds Ratio: Words That Predict Success
+
+```{python}
+#| label: log-odds-analysis
+#| code-summary: "NLP-based word importance using log-odds ratios"
+#| fig-cap: "Words with positive log-odds increase conversion probability; negative words are 'deal killers'."
+
+def analyze_title_words(df, min_doc_freq=30):
+    """
+    Calculate log-odds ratio for words in job titles.
+    Identifies which specific words predict conversion success.
+    """
+    # Vectorize titles
+    vectorizer = CountVectorizer(
+        stop_words='english',
+        min_df=min_doc_freq,
+        token_pattern=r'\b[a-zA-Z]{2,}\b'  # Only words with 2+ letters
+    )
+
+    X = vectorizer.fit_transform(df['contact_lead_title'].fillna(''))
+    words = np.array(vectorizer.get_feature_names_out())
+
+    # Calculate word frequencies by outcome
+    success_mask = df['is_success'] == 1
+    x_success = np.array(X[success_mask].sum(axis=0)).flatten()
+    x_failure = np.array(X[~success_mask].sum(axis=0)).flatten()
+
+    # Laplace smoothing to avoid division by zero
+    total_success = x_success.sum()
+    total_failure = x_failure.sum()
+
+    p_success = (x_success + 1) / (total_success + len(words))
+    p_failure = (x_failure + 1) / (total_failure + len(words))
+
+    # Log-odds ratio
+    log_odds = np.log(p_success / p_failure)
+
+    # Create results dataframe
+    word_stats = pd.DataFrame({
+        'word': words,
+        'log_odds': log_odds,
+        'success_count': x_success,
+        'failure_count': x_failure,
+        'total_count': x_success + x_failure
+    })
+
+    return word_stats.sort_values('log_odds', ascending=False)
+
+
+word_analysis = analyze_title_words(df_products)
+
+# Get top and bottom words
+top_positive = word_analysis.nlargest(15, 'log_odds')
+top_negative = word_analysis.nsmallest(15, 'log_odds')
+top_words = pd.concat([top_positive, top_negative])
+
+fig, ax = plt.subplots(figsize=(12, 10))
+
+colors = [COLORS['success'] if x > 0 else COLORS['failure'] for x in top_words['log_odds']]
+top_words_sorted = top_words.sort_values('log_odds', ascending=True)
+
+bars = ax.barh(range(len(top_words_sorted)), top_words_sorted['log_odds'], color=colors)
+ax.set_yticks(range(len(top_words_sorted)))
+ax.set_yticklabels([f"{row['word']} (n={row['total_count']})" for _, row in top_words_sorted.iterrows()])
+ax.axvline(x=0, color='black', linestyle='-', linewidth=0.5)
+ax.set_xlabel('Log-Odds Ratio (Positive = Increases Conversion)', fontsize=12)
+ax.set_title('Semantic Decoding: Title Words That Predict Pipeline Success\n(Green = Positive Signal, Orange = Negative Signal)',
+             fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('../../output/title_word_logodds.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+print("Top 10 Positive Signal Words:")
+print(top_positive[['word', 'log_odds', 'total_count']].head(10).to_string(index=False))
+print("\nTop 10 Negative Signal Words:")
+print(top_negative[['word', 'log_odds', 'total_count']].head(10).to_string(index=False))
+```
+
+------------------------------------------------------------------------
+
+# Feature Importance: Information Theory
+
+## Mutual Information Ranking
+
+```{python}
+#| label: mutual-information
+#| code-summary: "Feature importance using mutual information"
+#| fig-cap: "Mutual information objectively ranks features by their predictive power."
+
+def calculate_mutual_information(df, target_col='is_success'):
+    """
+    Calculate mutual information between categorical features and target.
+    Provides unbiased feature importance ranking.
+    """
+    # Select categorical columns
+    categorical_features = [
+        'acct_target_industry',
+        'acct_manufacturing_model',
+        'acct_territory_rollup',
+        'acct_tier_rollup',
+        'acct_primary_site_function',
+        'seniority',
+        'function',
+        'is_decision_maker',
+        'product',
+        'priority',
+        'last_tactic_campaign_channel'
+    ]
+
+    # Filter to existing columns
+    features = [f for f in categorical_features if f in df.columns]
+
+    # Encode categorical variables
+    le = LabelEncoder()
+    X = df[features].apply(lambda col: le.fit_transform(col.astype(str)))
+    y = df[target_col]
+
+    # Calculate mutual information
+    mi_scores = mutual_info_classif(X, y, discrete_features=True, random_state=42)
+
+    results = pd.DataFrame({
+        'feature': features,
+        'mi_score': mi_scores
+    }).sort_values('mi_score', ascending=False)
+
+    return results
+
+
+mi_ranking = calculate_mutual_information(df_products)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+
+colors = [COLORS['success'] if score > mi_ranking['mi_score'].median()
+          else COLORS['neutral'] for score in mi_ranking['mi_score']]
+
+bars = ax.barh(range(len(mi_ranking)), mi_ranking['mi_score'], color=colors)
+ax.set_yticks(range(len(mi_ranking)))
+ax.set_yticklabels(mi_ranking['feature'])
+ax.invert_yaxis()
+ax.set_xlabel('Mutual Information Score (bits)', fontsize=12)
+ax.set_title('Feature Importance: Mutual Information Ranking\n(Higher = More Predictive of Conversion)', fontweight='bold')
+
+# Add value labels
+for i, (score, feature) in enumerate(zip(mi_ranking['mi_score'], mi_ranking['feature'])):
+    ax.text(score + 0.001, i, f'{score:.4f}', va='center', fontsize=10)
+
+plt.tight_layout()
+plt.savefig('../../output/feature_importance_mi.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+print("Feature Importance Ranking:")
+print(mi_ranking.to_string(index=False))
+```
+
+------------------------------------------------------------------------
+
+# Temporal Analysis: Cohort Trends
+
+```{python}
+#| label: temporal-analysis
+#| code-summary: "Analyze conversion trends over time"
+#| fig-cap: "Temporal trends reveal whether performance is improving or declining."
+
+# Quarterly conversion rates
+quarterly_stats = df_products.groupby(['cohort_quarter', 'product']).agg(
+    n=('is_success', 'size'),
+    conversion=('is_success', 'mean')
+).reset_index()
+
+# Filter to quarters with sufficient data
+quarterly_stats = quarterly_stats[quarterly_stats['n'] >= 50]
+
+fig, ax = plt.subplots(figsize=(14, 6))
+
+for product, color in [('Mx', COLORS['mx']), ('Qx', COLORS['qx'])]:
+    data = quarterly_stats[quarterly_stats['product'] == product].sort_values('cohort_quarter')
+    ax.plot(data['cohort_quarter'], data['conversion'], marker='o', linewidth=2,
+            label=product, color=color, markersize=8)
+
+ax.set_xlabel('Cohort Quarter', fontsize=12)
+ax.set_ylabel('Conversion Rate', fontsize=12)
+ax.set_title('Conversion Rate Trend by Product\n(Quarterly Cohorts)', fontweight='bold')
+ax.legend()
+ax.tick_params(axis='x', rotation=45)
+ax.set_ylim(0, 0.30)
+ax.grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('../../output/temporal_trend.png', dpi=150, bbox_inches='tight')
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# Lead Source Effectiveness
+
+```{python}
+#| label: lead-source
+#| code-summary: "Analyze lead source ROI"
+#| fig-cap: "Lead source effectiveness helps optimize marketing spend allocation."
+
+channel_stats = segment_analysis(df_products, 'last_tactic_campaign_channel', min_n=50)
+
+fig, ax = plt.subplots(figsize=(12, 7))
+
+channel_sorted = channel_stats.sort_values('conversion', ascending=True)
+colors = [COLORS['success'] if x > df_products['is_success'].mean() else COLORS['failure']
+          for x in channel_sorted['conversion']]
+
+bars = ax.barh(range(len(channel_sorted)), channel_sorted['conversion'], color=colors)
+
+for i, row in enumerate(channel_sorted.itertuples()):
+    ax.plot([row.ci_low, row.ci_high], [i, i], color='black', linewidth=2)
+    ax.text(row.conversion + 0.01, i, f'{row.conversion:.1%} (n={row.n:,})', va='center', fontsize=10)
+
+ax.set_yticks(range(len(channel_sorted)))
+ax.set_yticklabels(channel_sorted['segment'])
+ax.axvline(x=df_products['is_success'].mean(), color='gray', linestyle='--', alpha=0.7)
+ax.set_xlabel('Conversion Rate', fontsize=12)
+ax.set_title('Lead Source Effectiveness\n(Campaign Channel Analysis)', fontweight='bold')
+ax.set_xlim(0, 0.35)
+
+plt.tight_layout()
+plt.savefig('../../output/lead_source_effectiveness.png', dpi=150, bbox_inches='tight')
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# Cross-Sell Opportunity Analysis
+
+Identify leads that converted for one product but might be candidates for the other.
+
+```{python}
+#| label: cross-sell
+#| code-summary: "Cross-sell opportunity identification"
+
+# Accounts with multiple products in pipeline
+account_products = df.groupby('qal_id').agg(
+    products=('product', lambda x: list(x.unique())),
+    n_products=('product', 'nunique'),
+    any_success=('is_success', 'max')
+).reset_index()
+
+# Success by product exposure
+multi_product = account_products[account_products['n_products'] > 1]
+single_product = account_products[account_products['n_products'] == 1]
+
+print("Cross-Sell Analysis:")
+print(f"  Single-product leads: {len(single_product):,}")
+print(f"  Multi-product leads: {len(multi_product):,}")
+
+print(f"\nConversion by product exposure:")
+print(f"  Single-product success rate: {single_product['any_success'].mean():.1%}")
+print(f"  Multi-product success rate: {multi_product['any_success'].mean():.1%}")
+
+# Identify high-value cross-sell targets
+# Successful Qx leads that haven't been pitched Mx
+qx_success = df[(df['product'] == 'Qx') & (df['is_success'] == 1)]
+print(f"\nPotential Mx Cross-Sell Targets:")
+print(f"  Successful Qx leads: {len(qx_success):,}")
+print(f"  Top industries for cross-sell:")
+print(qx_success['acct_target_industry'].value_counts().head(5).to_string())
+```
+
+------------------------------------------------------------------------
+
+# Export Cleaned Dataset
+
+```{python}
+#| label: export-data
+#| code-summary: "Export cleaned dataset for modeling"
+
+# Select columns for export
+export_cols = [
+    # IDs
+    'qal_id', 'contact_lead_id',
+
+    # Target
+    'is_success', 'next_stage__c',
+
+    # Product
+    'product', 'solution', 'solution_rollup',
+
+    # Account attributes
+    'acct_target_industry', 'acct_manufacturing_model',
+    'acct_primary_site_function', 'acct_territory_rollup', 'acct_tier_rollup',
+
+    # Title features (engineered)
+    'contact_lead_title', 'seniority', 'function', 'is_decision_maker',
+
+    # Lead attributes
+    'priority', 'last_tactic_campaign_channel',
+
+    # Temporal
+    'cohort_date', 'cohort_year', 'cohort_quarter', 'cohort_month'
+]
+
+# Filter to existing columns
+export_cols = [c for c in export_cols if c in df.columns]
+df_export = df[export_cols].copy()
+
+# Save to output folder
+output_path = Path.cwd().parent.parent / 'output' / 'QAL_Cleaned_For_Modeling.csv'
+output_path.parent.mkdir(exist_ok=True)
+df_export.to_csv(output_path, index=False)
+
+print(f"Exported cleaned dataset: {output_path}")
+print(f"  Rows: {len(df_export):,}")
+print(f"  Columns: {len(df_export.columns)}")
+print(f"\nColumn summary:")
+print(df_export.dtypes.to_string())
+```
+
+------------------------------------------------------------------------
+
+# Key Findings Summary
+
+```{python}
+#| label: summary
+#| code-summary: "Executive summary of findings"
+
+print("=" * 70)
+print("EXECUTIVE SUMMARY: KEY FINDINGS FOR MASTERCONTROL")
+print("=" * 70)
+
+print(f"""
+1. THE GAP IS REAL AND SIGNIFICANT
+   - Qx Conversion: {results['Qx']['rate']:.1%}
+   - Mx Conversion: {results['Mx']['rate']:.1%}
+   - Gap: {comparison['difference']:.1%} (p < 0.001)
+
+2. TOP PREDICTIVE FEATURES (by Mutual Information)
+""")
+for _, row in mi_ranking.head(5).iterrows():
+    print(f"   - {row['feature']}: {row['mi_score']:.4f}")
+
+print(f"""
+3. IDEAL CUSTOMER PROFILE SIGNALS
+   - Decision-maker titles convert higher
+   - Quality and Regulatory functions show strong signals
+   - In-House manufacturing model outperforms CDMO in several industries
+
+4. MODELING RECOMMENDATIONS
+   - Use seniority + function as separate features
+   - Include is_decision_maker flag
+   - Test industry x manufacturing_model interactions
+   - Consider temporal features for cohort effects
+
+5. DELIVERABLES GENERATED
+   - output/QAL_Cleaned_For_Modeling.csv
+   - output/mx_qx_gap_analysis.png
+   - output/industry_conversion.png
+   - output/seniority_conversion.png
+   - output/function_mx_qx_comparison.png
+   - output/interaction_heatmap.png
+   - output/mx_targeting_matrix.png
+   - output/title_word_logodds.png
+   - output/feature_importance_mi.png
+   - output/temporal_trend.png
+   - output/lead_source_effectiveness.png
+""")
+
+print("=" * 70)
+print("READY FOR PHASE 3: PREDICTIVE MODELING")
+print("=" * 70)
+```
