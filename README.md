@@ -155,7 +155,8 @@ df = pd.read_csv(path)
 | Team Member | Email (Personal) | Email (University) | Phone |
 | :--- | :--- | :--- | :--- |
 | **Thomas Beck** | thomasscottbeck@gmail.com | u0399590@utah.edu | +1 (801) 631-2080 |
-| **Max Ridgeway** | [TBD] | [TBD] | +1 (801) 597-3824 |
+| **Max Ridgeway** | [TBD] | u1230181@utah.edu | +1 (801) 597-3824 |
+| **Astha KC** | asthakc.us@gmail.com | u1561947@utah.edu | +1 (971) 500-6757 |
 
 ---
 > **Note:** Before starting any work session, run `git pull` to sync the latest model changes from the team.
