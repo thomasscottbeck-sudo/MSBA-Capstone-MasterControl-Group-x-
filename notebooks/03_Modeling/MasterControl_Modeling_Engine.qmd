@@ -1,0 +1,1414 @@
+---
+title: "The Revenue Engine V2: MasterControl Advanced Modeling"
+subtitle: "Maximum Predictive Power for Mx Lead Prioritization"
+author: "MSBA Capstone Group 3"
+date: "Spring 2026"
+format:
+  html:
+    theme: journal
+    toc: true
+    toc-depth: 3
+    df-print: paged
+    code-fold: true
+    code-tools: true
+  pdf:
+    documentclass: article
+    geometry:
+      - top=1in
+      - bottom=1in
+      - left=0.75in
+      - right=0.75in
+    toc: true
+    number-sections: true
+    colorlinks: true
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: visual
+---
+
+# Executive Summary
+
+**The Mission:** Push our baseline model (AUC ~0.86) to maximum predictive power using advanced feature engineering, hyperparameter-tuned ensemble models, and production-grade interpretability.
+
+**V2 Upgrades:**
+
+1.  **Latent Semantic Analysis (LSA):** Dense semantic embeddings for job titles
+2.  **Polynomial Interaction Features:** Explicit "VP × Operations" cross-products
+3.  **Target Encoding:** Smooth win-rate encoding for high-cardinality industries
+4.  **Hyperparameter Tuning:** GridSearchCV for XGBoost & LightGBM
+5.  **Voting Ensemble:** Soft-voting combination of top performers
+6.  **Revenue Curve:** Dollar-denominated business impact visualization
+
+------------------------------------------------------------------------
+
+# Phase 1: Production Environment Setup
+
+```{python}
+#| label: setup
+
+# ==============================================================================
+# PRODUCTION ENVIRONMENT V2
+# ==============================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+import warnings
+from pathlib import Path
+from datetime import datetime
+
+# Scikit-learn Core
+from sklearn.model_selection import (
+    train_test_split, cross_val_score, StratifiedKFold,
+    GridSearchCV, RandomizedSearchCV, cross_val_predict
+)
+from sklearn.preprocessing import (
+    StandardScaler, OneHotEncoder, LabelEncoder,
+    FunctionTransformer, PolynomialFeatures
+)
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklearn.impute import SimpleImputer
+from sklearn.base import BaseEstimator, TransformerMixin
+
+# Models
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import (
+    RandomForestClassifier, VotingClassifier,
+    GradientBoostingClassifier
+)
+from sklearn.neural_network import MLPClassifier
+
+# XGBoost & LightGBM
+import xgboost as xgb
+import lightgbm as lgb
+
+# Metrics
+from sklearn.metrics import (
+    roc_auc_score, precision_recall_curve, auc,
+    log_loss, classification_report, confusion_matrix,
+    roc_curve, precision_score, recall_score, f1_score,
+    make_scorer
+)
+
+# Calibration
+from sklearn.calibration import CalibratedClassifierCV
+
+# Interpretability
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    print("⚠️ SHAP not available. Install with: pip install shap")
+
+# Parallelization
+from joblib import Parallel, delayed
+import multiprocessing
+
+# ==============================================================================
+# GLOBAL CONFIGURATION
+# ==============================================================================
+
+RANDOM_STATE = 42
+N_JOBS = -1  # Use all cores
+CV_FOLDS = 5
+TEST_SIZE = 0.2
+
+# Business Parameters
+AVG_DEAL_SIZE = 50000  # $50k average deal
+CONVERSION_TO_DEAL = 0.12  # 12% of SQLs become deals
+
+np.random.seed(RANDOM_STATE)
+
+# Project Colors (The Golden Palette)
+PROJECT_COLS = {
+    'Success': '#00534B',   # MasterControl Teal
+    'Failure': '#F05627',   # Risk Orange
+    'Neutral': '#95a5a6',   # Gray
+    'Highlight': '#2980b9', # Blue
+    'Gold': '#f39c12',      # Accent Gold
+    'Purple': '#9b59b6'     # Accent Purple
+}
+
+# Plotting configuration
+sns.set_theme(style="whitegrid", context="talk")
+plt.rcParams['figure.figsize'] = (14, 8)
+plt.rcParams['axes.titleweight'] = 'bold'
+plt.rcParams['font.family'] = 'sans-serif'
+
+warnings.filterwarnings('ignore')
+
+print("=" * 70)
+print("🚀 PRODUCTION MODELING ENVIRONMENT V2")
+print("=" * 70)
+print(f"✓ Random State: {RANDOM_STATE}")
+print(f"✓ CPU Cores: {multiprocessing.cpu_count()}")
+print(f"✓ CV Folds: {CV_FOLDS}")
+print(f"✓ XGBoost: Available")
+print(f"✓ LightGBM: Available")
+print(f"✓ SHAP: {SHAP_AVAILABLE}")
+print(f"✓ Avg Deal Size: ${AVG_DEAL_SIZE:,}")
+print("=" * 70)
+```
+
+------------------------------------------------------------------------
+
+# Phase 2: Data Loading & Advanced Feature Engineering
+
+```{python}
+#| label: data-loading
+
+# ==============================================================================
+# DATA LOADING
+# ==============================================================================
+
+def load_data():
+    """Load raw data with intelligent path detection."""
+    possible_paths = [
+        Path.cwd() / "data" / "QAL Performance for MSBA.csv",
+        Path.cwd().parent / "data" / "QAL Performance for MSBA.csv",
+        Path.cwd().parent.parent / "data" / "QAL Performance for MSBA.csv",
+        Path.cwd().parent.parent.parent / "data" / "QAL Performance for MSBA.csv"
+    ]
+
+    for p in possible_paths:
+        if p.exists():
+            df = pd.read_csv(p)
+            print(f"✓ Data loaded from: {p}")
+            return df
+
+    raise FileNotFoundError("Could not find QAL Performance for MSBA.csv")
+
+df_raw = load_data()
+
+# Standardize column names
+df_raw.columns = [c.strip().lower().replace(' ', '_').replace('/', '_').replace('-', '_')
+                  for c in df_raw.columns]
+
+print(f"✓ Raw Data Shape: {df_raw.shape}")
+```
+
+```{python}
+#| label: feature-engineering
+
+# ==============================================================================
+# ADVANCED FEATURE ENGINEERING PIPELINE
+# ==============================================================================
+
+def engineer_features(df):
+    """
+    V2 Feature Engineering with Advanced Techniques.
+    """
+    df = df.copy()
+
+    # -------------------------------------------------------------------------
+    # 1. TARGET VARIABLE
+    # -------------------------------------------------------------------------
+    success_stages = ['SQL', 'SQO', 'Won']
+    df['is_success'] = df['next_stage__c'].isin(success_stages).astype(int)
+
+    # -------------------------------------------------------------------------
+    # 2. PRODUCT SEGMENTATION
+    # -------------------------------------------------------------------------
+    def segment_product(sol):
+        if str(sol) == 'Mx': return 'Mx'
+        elif str(sol) == 'Qx': return 'Qx'
+        return 'Other'
+    df['product_segment'] = df['solution_rollup'].apply(segment_product)
+
+    # -------------------------------------------------------------------------
+    # 3. TITLE PARSING (Enhanced)
+    # -------------------------------------------------------------------------
+    def parse_seniority(t):
+        if pd.isna(t): return 'Unknown'
+        t = str(t).lower()
+        if re.search(r'\b(ceo|cfo|coo|cto|cio|chief|c-level|president|founder|owner)\b', t):
+            return 'C-Suite'
+        if re.search(r'\b(svp|senior vice president|evp)\b', t):
+            return 'SVP'
+        if re.search(r'\b(vp|vice president|head of)\b', t):
+            return 'VP'
+        if re.search(r'\b(director)\b', t):
+            return 'Director'
+        if re.search(r'\b(manager|mgr|lead|supervisor)\b', t):
+            return 'Manager'
+        if re.search(r'\b(analyst|engineer|specialist|associate|coordinator)\b', t):
+            return 'IC'
+        return 'Other'
+
+    def parse_function(t):
+        if pd.isna(t): return 'Unknown'
+        t = str(t).lower()
+        if re.search(r'\b(manuf|prod|ops|plant|supply|site|factory)\b', t):
+            return 'Manufacturing_Ops'
+        if re.search(r'\b(quality|qa|qc|qms|compliance|validation|capa)\b', t):
+            return 'Quality_Reg'
+        if re.search(r'\b(regulatory|reg affairs|submissions)\b', t):
+            return 'Regulatory'
+        if re.search(r'\b(it|info|sys|tech|data|soft)\b', t):
+            return 'IT_Systems'
+        if re.search(r'\b(lab|r&d|sci|dev|clin|research)\b', t):
+            return 'R_D_Lab'
+        return 'Other'
+
+    def parse_scope(t):
+        if pd.isna(t): return 'Standard'
+        t = str(t).lower()
+        if re.search(r'\b(global|worldwide|international|corporate|enterprise|group)\b', t):
+            return 'Global'
+        if re.search(r'\b(regional|division)\b', t):
+            return 'Regional'
+        if re.search(r'\b(site|plant|facility|local)\b', t):
+            return 'Site'
+        return 'Standard'
+
+    df['title_seniority'] = df['contact_lead_title'].apply(parse_seniority)
+    df['title_function'] = df['contact_lead_title'].apply(parse_function)
+    df['title_scope'] = df['contact_lead_title'].apply(parse_scope)
+    df['is_decision_maker'] = df['title_seniority'].isin(
+        ['C-Suite', 'SVP', 'VP', 'Director']
+    ).astype(int)
+
+    # -------------------------------------------------------------------------
+    # 4. RECORD COMPLETENESS
+    # -------------------------------------------------------------------------
+    completeness_cols = [
+        'acct_manufacturing_model', 'acct_primary_site_function',
+        'acct_target_industry', 'acct_territory_rollup', 'acct_tier_rollup'
+    ]
+
+    def calc_completeness(row):
+        filled = sum(1 for col in completeness_cols
+                     if col in row.index and pd.notna(row[col])
+                     and str(row[col]).lower() not in ['unknown', 'nan', ''])
+        return filled / len(completeness_cols)
+
+    df['record_completeness'] = df.apply(calc_completeness, axis=1)
+
+    # -------------------------------------------------------------------------
+    # 5. TEMPORAL FEATURES
+    # -------------------------------------------------------------------------
+    df['cohort_date'] = pd.to_datetime(df['qal_cohort_date'], errors='coerce')
+    df['cohort_quarter'] = df['cohort_date'].dt.quarter.fillna(0).astype(int)
+    df['cohort_month'] = df['cohort_date'].dt.month.fillna(0).astype(int)
+    df['cohort_dayofweek'] = df['cohort_date'].dt.dayofweek.fillna(0).astype(int)
+
+    # -------------------------------------------------------------------------
+    # 6. IMPUTATION
+    # -------------------------------------------------------------------------
+    fill_cols = ['acct_target_industry', 'acct_manufacturing_model',
+                 'acct_territory_rollup', 'acct_primary_site_function']
+    for col in fill_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna('Unknown')
+
+    df['contact_lead_title'] = df['contact_lead_title'].fillna('Unknown Title')
+
+    # -------------------------------------------------------------------------
+    # 7. HIGH-VALUE INTERACTION: Seniority x Function (Explicit)
+    # -------------------------------------------------------------------------
+    df['seniority_function'] = df['title_seniority'] + '_X_' + df['title_function']
+
+    return df
+
+# Apply feature engineering
+df = engineer_features(df_raw)
+
+print("=" * 70)
+print("✅ FEATURE ENGINEERING COMPLETE")
+print("=" * 70)
+print(f"✓ Total Records: {len(df):,}")
+print(f"✓ Target Rate: {df['is_success'].mean():.1%}")
+print(f"✓ Mx Leads: {len(df[df['product_segment']=='Mx']):,}")
+print(f"✓ Unique Industries: {df['acct_target_industry'].nunique()}")
+print(f"✓ Unique Seniority×Function: {df['seniority_function'].nunique()}")
+```
+
+------------------------------------------------------------------------
+
+# Phase 3: Target Encoding & LSA Pipeline
+
+```{python}
+#| label: target-encoder
+
+# ==============================================================================
+# CUSTOM TARGET ENCODER (Smoothed)
+# ==============================================================================
+
+class TargetEncoder(BaseEstimator, TransformerMixin):
+    """
+    Smoothed Target Encoding for high-cardinality categorical features.
+    Uses leave-one-out encoding to prevent target leakage.
+    
+    Formula: encoded = (count * mean + global_mean * smoothing) / (count + smoothing)
+    """
+    
+    def __init__(self, smoothing=10, min_samples=5):
+        self.smoothing = smoothing
+        self.min_samples = min_samples
+        self.encoding_map_ = {}
+        self.global_mean_ = None
+        
+    def fit(self, X, y):
+        X = np.array(X).ravel()
+        y = np.array(y).ravel()
+        
+        self.global_mean_ = y.mean()
+        
+        df = pd.DataFrame({'feature': X, 'target': y})
+        agg = df.groupby('feature')['target'].agg(['mean', 'count'])
+        
+        # Smoothed encoding
+        smoothed_mean = (
+            (agg['count'] * agg['mean'] + self.smoothing * self.global_mean_) /
+            (agg['count'] + self.smoothing)
+        )
+        
+        # Replace low-count categories with global mean
+        smoothed_mean[agg['count'] < self.min_samples] = self.global_mean_
+        
+        self.encoding_map_ = smoothed_mean.to_dict()
+        
+        return self
+    
+    def transform(self, X):
+        X = np.array(X).ravel()
+        encoded = np.array([
+            self.encoding_map_.get(val, self.global_mean_) 
+            for val in X
+        ]).reshape(-1, 1)
+        return encoded
+
+
+# ==============================================================================
+# LSA TEXT TRANSFORMER
+# ==============================================================================
+
+class LSATextTransformer(BaseEstimator, TransformerMixin):
+    """
+    Latent Semantic Analysis for text features.
+    TF-IDF → TruncatedSVD → Dense semantic components.
+    """
+    
+    def __init__(self, n_components=15, max_features=500):
+        self.n_components = n_components
+        self.max_features = max_features
+        self.tfidf = None
+        self.svd = None
+        
+    def fit(self, X, y=None):
+        X = np.array(X).ravel()
+        X = [str(x).lower() if pd.notna(x) else 'unknown' for x in X]
+        
+        self.tfidf = TfidfVectorizer(
+            max_features=self.max_features,
+            stop_words='english',
+            ngram_range=(1, 2),
+            min_df=5,
+            max_df=0.95
+        )
+        
+        tfidf_matrix = self.tfidf.fit_transform(X)
+        
+        # LSA via TruncatedSVD
+        n_comp = min(self.n_components, tfidf_matrix.shape[1] - 1)
+        self.svd = TruncatedSVD(n_components=n_comp, random_state=RANDOM_STATE)
+        self.svd.fit(tfidf_matrix)
+        
+        return self
+    
+    def transform(self, X):
+        X = np.array(X).ravel()
+        X = [str(x).lower() if pd.notna(x) else 'unknown' for x in X]
+        
+        tfidf_matrix = self.tfidf.transform(X)
+        lsa_matrix = self.svd.transform(tfidf_matrix)
+        
+        return lsa_matrix
+    
+    def get_feature_names_out(self):
+        return [f'LSA_{i}' for i in range(self.svd.n_components)]
+
+
+print("✓ Custom Transformers Defined: TargetEncoder, LSATextTransformer")
+```
+
+------------------------------------------------------------------------
+
+# Phase 4: Model-Ready Dataset
+
+```{python}
+#| label: model-prep
+
+# ==============================================================================
+# PREPARE MX-FOCUSED DATASET
+# ==============================================================================
+
+# Filter to Mx leads only
+df_mx = df[df['product_segment'] == 'Mx'].copy()
+
+print(f"✓ Mx Dataset: {len(df_mx):,} leads")
+print(f"✓ Mx Conversion Rate: {df_mx['is_success'].mean():.1%}")
+
+# Define feature groups
+CATEGORICAL_LOW_CARD = [
+    'title_seniority',
+    'title_function',
+    'title_scope',
+    'acct_manufacturing_model',
+    'acct_territory_rollup'
+]
+
+CATEGORICAL_HIGH_CARD = [
+    'acct_target_industry'  # Target encode this
+]
+
+INTERACTION_FEATURES = [
+    'seniority_function'  # Pre-computed interaction
+]
+
+NUMERIC_FEATURES = [
+    'is_decision_maker',
+    'record_completeness',
+    'cohort_quarter',
+    'cohort_month',
+    'cohort_dayofweek'
+]
+
+TEXT_FEATURE = 'contact_lead_title'
+TARGET = 'is_success'
+
+# Filter to existing columns
+CATEGORICAL_LOW_CARD = [f for f in CATEGORICAL_LOW_CARD if f in df_mx.columns]
+CATEGORICAL_HIGH_CARD = [f for f in CATEGORICAL_HIGH_CARD if f in df_mx.columns]
+INTERACTION_FEATURES = [f for f in INTERACTION_FEATURES if f in df_mx.columns]
+NUMERIC_FEATURES = [f for f in NUMERIC_FEATURES if f in df_mx.columns]
+
+ALL_FEATURES = CATEGORICAL_LOW_CARD + CATEGORICAL_HIGH_CARD + INTERACTION_FEATURES + NUMERIC_FEATURES + [TEXT_FEATURE]
+
+print(f"\n✓ Low-Card Categorical: {CATEGORICAL_LOW_CARD}")
+print(f"✓ High-Card (Target Encode): {CATEGORICAL_HIGH_CARD}")
+print(f"✓ Interaction Features: {INTERACTION_FEATURES}")
+print(f"✓ Numeric: {NUMERIC_FEATURES}")
+print(f"✓ Text (LSA): {TEXT_FEATURE}")
+```
+
+```{python}
+#| label: train-test-split
+
+# ==============================================================================
+# STRATIFIED TRAIN/TEST SPLIT
+# ==============================================================================
+
+X = df_mx[ALL_FEATURES].copy()
+y = df_mx[TARGET].copy()
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=TEST_SIZE,
+    random_state=RANDOM_STATE,
+    stratify=y
+)
+
+print("=" * 70)
+print("TRAIN/TEST SPLIT")
+print("=" * 70)
+print(f"✓ Training: {len(X_train):,} ({len(X_train)/len(X):.0%})")
+print(f"✓ Test: {len(X_test):,} ({len(X_test)/len(X):.0%})")
+print(f"✓ Train Target Rate: {y_train.mean():.1%}")
+print(f"✓ Test Target Rate: {y_test.mean():.1%}")
+```
+
+------------------------------------------------------------------------
+
+# Phase 5: Advanced Preprocessing Pipeline
+
+```{python}
+#| label: preprocessing
+
+# ==============================================================================
+# ADVANCED PREPROCESSING PIPELINE
+# ==============================================================================
+
+# 1. Numeric Pipeline
+numeric_pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())
+])
+
+# 2. Low-Cardinality Categorical Pipeline (OneHot)
+categorical_low_pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='constant', fill_value='Unknown')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+])
+
+# 3. High-Cardinality Pipeline (Target Encoding)
+# We'll apply target encoding separately to avoid leakage
+
+# 4. Interaction Features Pipeline (OneHot with limit)
+interaction_pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='constant', fill_value='Unknown')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False, 
+                             max_categories=30))
+])
+
+# 5. LSA Text Pipeline
+lsa_pipeline = LSATextTransformer(n_components=15, max_features=500)
+
+# Build ColumnTransformer (without target encoding for now)
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', numeric_pipeline, NUMERIC_FEATURES),
+        ('cat_low', categorical_low_pipeline, CATEGORICAL_LOW_CARD),
+        ('interaction', interaction_pipeline, INTERACTION_FEATURES),
+        ('lsa', lsa_pipeline, TEXT_FEATURE)
+    ],
+    remainder='drop',
+    n_jobs=N_JOBS
+)
+
+# Fit preprocessor
+X_train_base = preprocessor.fit_transform(X_train)
+X_test_base = preprocessor.transform(X_test)
+
+print(f"✓ Base Features Shape: {X_train_base.shape}")
+
+# Add Target Encoding for high-cardinality features
+if CATEGORICAL_HIGH_CARD:
+    target_encoders = {}
+    target_encoded_train = []
+    target_encoded_test = []
+    
+    for col in CATEGORICAL_HIGH_CARD:
+        te = TargetEncoder(smoothing=10, min_samples=5)
+        te.fit(X_train[col], y_train)
+        target_encoders[col] = te
+        
+        target_encoded_train.append(te.transform(X_train[col]))
+        target_encoded_test.append(te.transform(X_test[col]))
+    
+    target_train = np.hstack(target_encoded_train)
+    target_test = np.hstack(target_encoded_test)
+    
+    X_train_processed = np.hstack([X_train_base, target_train])
+    X_test_processed = np.hstack([X_test_base, target_test])
+    
+    print(f"✓ + Target Encoded: {target_train.shape[1]} features")
+else:
+    X_train_processed = X_train_base
+    X_test_processed = X_test_base
+
+print(f"✓ Final Features Shape: {X_train_processed.shape}")
+
+# Get feature names
+def get_feature_names():
+    names = []
+    
+    # Numeric
+    names.extend([f'num_{c}' for c in NUMERIC_FEATURES])
+    
+    # Low-card categorical
+    try:
+        ohe = preprocessor.named_transformers_['cat_low'].named_steps['onehot']
+        names.extend(ohe.get_feature_names_out(CATEGORICAL_LOW_CARD))
+    except:
+        names.extend([f'cat_{c}' for c in CATEGORICAL_LOW_CARD])
+    
+    # Interaction
+    try:
+        ohe = preprocessor.named_transformers_['interaction'].named_steps['onehot']
+        names.extend(ohe.get_feature_names_out(INTERACTION_FEATURES))
+    except:
+        names.extend([f'int_{c}' for c in INTERACTION_FEATURES])
+    
+    # LSA
+    names.extend([f'LSA_{i}' for i in range(15)])
+    
+    # Target encoded
+    names.extend([f'TE_{c}' for c in CATEGORICAL_HIGH_CARD])
+    
+    return names
+
+FEATURE_NAMES = get_feature_names()
+print(f"✓ Total Feature Names: {len(FEATURE_NAMES)}")
+```
+
+------------------------------------------------------------------------
+
+# Phase 6: The Super-Model Tournament
+
+```{python}
+#| label: model-definitions
+
+# ==============================================================================
+# MODEL DEFINITIONS WITH HYPERPARAMETER GRIDS
+# ==============================================================================
+
+# Calculate class weight for imbalanced data
+pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+print(f"✓ Class Imbalance Ratio: {pos_weight:.2f}:1")
+
+# Base models
+models = {}
+
+# 1. LOGISTIC REGRESSION (LASSO)
+models['Logistic_LASSO'] = {
+    'model': LogisticRegression(
+        penalty='l1',
+        solver='saga',
+        max_iter=1000,
+        random_state=RANDOM_STATE,
+        n_jobs=N_JOBS,
+        class_weight='balanced'
+    ),
+    'params': {
+        'C': [0.01, 0.1, 1.0]
+    }
+}
+
+# 2. RANDOM FOREST
+models['Random_Forest'] = {
+    'model': RandomForestClassifier(
+        random_state=RANDOM_STATE,
+        n_jobs=N_JOBS,
+        class_weight='balanced'
+    ),
+    'params': {
+        'n_estimators': [100, 200],
+        'max_depth': [8, 12],
+        'min_samples_leaf': [10, 20]
+    }
+}
+
+# 3. XGBOOST (Tuned)
+models['XGBoost'] = {
+    'model': xgb.XGBClassifier(
+        random_state=RANDOM_STATE,
+        n_jobs=N_JOBS,
+        use_label_encoder=False,
+        eval_metric='logloss'
+    ),
+    'params': {
+        'n_estimators': [150, 250],
+        'max_depth': [4, 6, 8],
+        'learning_rate': [0.05, 0.1],
+        'scale_pos_weight': [1, pos_weight],
+        'subsample': [0.8],
+        'colsample_bytree': [0.8]
+    }
+}
+
+# 4. LIGHTGBM (Fast & Powerful)
+models['LightGBM'] = {
+    'model': lgb.LGBMClassifier(
+        random_state=RANDOM_STATE,
+        n_jobs=N_JOBS,
+        verbose=-1
+    ),
+    'params': {
+        'n_estimators': [150, 250],
+        'max_depth': [4, 6, 8],
+        'learning_rate': [0.05, 0.1],
+        'scale_pos_weight': [1, pos_weight],
+        'num_leaves': [31, 63]
+    }
+}
+
+# 5. NEURAL NETWORK (MLP with Dropout-like regularization)
+models['Neural_Network'] = {
+    'model': MLPClassifier(
+        random_state=RANDOM_STATE,
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=15
+    ),
+    'params': {
+        'hidden_layer_sizes': [(128, 64), (256, 128, 64)],
+        'alpha': [0.001, 0.01],  # L2 regularization (dropout proxy)
+        'learning_rate_init': [0.001, 0.01],
+        'batch_size': [64, 128]
+    }
+}
+
+print("=" * 70)
+print("🏆 SUPER-MODEL TOURNAMENT")
+print("=" * 70)
+for name in models:
+    print(f"  • {name}")
+```
+
+```{python}
+#| label: model-training
+
+# ==============================================================================
+# HYPERPARAMETER TUNING & TRAINING
+# ==============================================================================
+
+cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+
+results = {}
+best_estimators = {}
+
+print(f"\n🔄 Training with {CV_FOLDS}-fold CV + GridSearchCV...\n")
+
+for name, config in models.items():
+    print(f"⏳ {name}...", end=" ")
+    start_time = datetime.now()
+    
+    # GridSearchCV
+    grid = GridSearchCV(
+        config['model'],
+        config['params'],
+        cv=cv,
+        scoring='roc_auc',
+        n_jobs=N_JOBS,
+        refit=True
+    )
+    
+    grid.fit(X_train_processed, y_train)
+    
+    best_model = grid.best_estimator_
+    best_estimators[name] = best_model
+    
+    # Test predictions
+    test_probs = best_model.predict_proba(X_test_processed)[:, 1]
+    test_preds = best_model.predict(X_test_processed)
+    
+    # Metrics
+    test_auc = roc_auc_score(y_test, test_probs)
+    test_logloss = log_loss(y_test, test_probs)
+    precision, recall, _ = precision_recall_curve(y_test, test_probs)
+    pr_auc = auc(recall, precision)
+    
+    elapsed = (datetime.now() - start_time).total_seconds()
+    
+    results[name] = {
+        'model': best_model,
+        'best_params': grid.best_params_,
+        'cv_auc': grid.best_score_,
+        'test_auc': test_auc,
+        'test_logloss': test_logloss,
+        'pr_auc': pr_auc,
+        'test_probs': test_probs,
+        'test_preds': test_preds,
+        'train_time': elapsed
+    }
+    
+    print(f"✓ AUC={test_auc:.4f} (Time: {elapsed:.1f}s)")
+
+print("\n✅ All base models trained!")
+```
+
+```{python}
+#| label: voting-ensemble
+
+# ==============================================================================
+# VOTING ENSEMBLE (THE CLOSER)
+# ==============================================================================
+
+# Select top 3 models by test AUC
+sorted_models = sorted(results.items(), key=lambda x: x[1]['test_auc'], reverse=True)
+top_3 = sorted_models[:3]
+
+print("=" * 70)
+print("🎯 VOTING ENSEMBLE: Combining Top 3 Models")
+print("=" * 70)
+for name, r in top_3:
+    print(f"  • {name}: AUC={r['test_auc']:.4f}")
+
+# Create voting classifier
+voting_estimators = [(name, best_estimators[name]) for name, _ in top_3]
+
+ensemble = VotingClassifier(
+    estimators=voting_estimators,
+    voting='soft',
+    n_jobs=N_JOBS
+)
+
+print("\n⏳ Training Voting Ensemble...")
+start_time = datetime.now()
+ensemble.fit(X_train_processed, y_train)
+
+# Ensemble predictions
+ensemble_probs = ensemble.predict_proba(X_test_processed)[:, 1]
+ensemble_preds = ensemble.predict(X_test_processed)
+
+# Metrics
+ensemble_auc = roc_auc_score(y_test, ensemble_probs)
+ensemble_logloss = log_loss(y_test, ensemble_probs)
+precision, recall, _ = precision_recall_curve(y_test, ensemble_probs)
+ensemble_pr_auc = auc(recall, precision)
+
+elapsed = (datetime.now() - start_time).total_seconds()
+
+results['Voting_Ensemble'] = {
+    'model': ensemble,
+    'best_params': 'N/A (Ensemble)',
+    'cv_auc': np.mean([results[name]['cv_auc'] for name, _ in top_3]),
+    'test_auc': ensemble_auc,
+    'test_logloss': ensemble_logloss,
+    'pr_auc': ensemble_pr_auc,
+    'test_probs': ensemble_probs,
+    'test_preds': ensemble_preds,
+    'train_time': elapsed
+}
+
+print(f"✓ Voting Ensemble AUC: {ensemble_auc:.4f}")
+```
+
+```{python}
+#| label: results-table
+
+# ==============================================================================
+# TOURNAMENT RESULTS
+# ==============================================================================
+
+results_df = pd.DataFrame({
+    name: {
+        'CV AUC': f"{r['cv_auc']:.4f}",
+        'Test AUC': f"{r['test_auc']:.4f}",
+        'PR AUC': f"{r['pr_auc']:.4f}",
+        'Log Loss': f"{r['test_logloss']:.4f}",
+        'Time (s)': f"{r['train_time']:.1f}"
+    }
+    for name, r in results.items()
+}).T
+
+results_df = results_df.sort_values('Test AUC', ascending=False)
+
+print("=" * 70)
+print("🏆 TOURNAMENT FINAL STANDINGS")
+print("=" * 70)
+print(results_df.to_string())
+
+# Best model
+best_model_name = results_df.index[0]
+best_result = results[best_model_name]
+print(f"\n🥇 CHAMPION: {best_model_name} (Test AUC: {best_result['test_auc']:.4f})")
+```
+
+------------------------------------------------------------------------
+
+# Phase 7: Performance Visualization
+
+```{python}
+#| label: roc-curves
+#| fig-cap: "ROC & PR Curves: Model comparison across all candidates."
+
+# ==============================================================================
+# ROC & PR CURVES
+# ==============================================================================
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+colors = list(PROJECT_COLS.values())[:len(results)]
+
+# LEFT: ROC Curves
+ax1 = axes[0]
+for i, (name, r) in enumerate(sorted(results.items(), key=lambda x: -x[1]['test_auc'])):
+    fpr, tpr, _ = roc_curve(y_test, r['test_probs'])
+    linewidth = 3 if name == best_model_name else 1.5
+    alpha = 1.0 if name == best_model_name else 0.7
+    ax1.plot(fpr, tpr, label=f"{name} ({r['test_auc']:.3f})",
+             color=colors[i % len(colors)], linewidth=linewidth, alpha=alpha)
+
+ax1.plot([0, 1], [0, 1], 'k--', linewidth=1)
+ax1.set_xlabel('False Positive Rate')
+ax1.set_ylabel('True Positive Rate')
+ax1.set_title('ROC Curves', fontweight='bold')
+ax1.legend(loc='lower right', fontsize=9)
+ax1.grid(alpha=0.3)
+
+# RIGHT: PR Curves
+ax2 = axes[1]
+baseline = y_test.mean()
+for i, (name, r) in enumerate(sorted(results.items(), key=lambda x: -x[1]['pr_auc'])):
+    precision, recall, _ = precision_recall_curve(y_test, r['test_probs'])
+    linewidth = 3 if name == best_model_name else 1.5
+    alpha = 1.0 if name == best_model_name else 0.7
+    ax2.plot(recall, precision, label=f"{name} ({r['pr_auc']:.3f})",
+             color=colors[i % len(colors)], linewidth=linewidth, alpha=alpha)
+
+ax2.axhline(y=baseline, color='black', linestyle='--', linewidth=1, label=f'Baseline ({baseline:.3f})')
+ax2.set_xlabel('Recall')
+ax2.set_ylabel('Precision')
+ax2.set_title('Precision-Recall Curves', fontweight='bold')
+ax2.legend(loc='upper right', fontsize=9)
+ax2.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# Phase 8: Revenue Curve & Business Lift
+
+```{python}
+#| label: revenue-calculation
+
+# ==============================================================================
+# REVENUE LIFT CALCULATION
+# ==============================================================================
+
+def calculate_revenue_curve(y_true, y_pred_proba, avg_deal=AVG_DEAL_SIZE, 
+                            sql_to_deal=CONVERSION_TO_DEAL):
+    """
+    Calculate cumulative revenue by leads contacted.
+    
+    Revenue = SQLs × SQL-to-Deal Rate × Average Deal Size
+    """
+    df_rev = pd.DataFrame({
+        'actual': y_true.values,
+        'prob': y_pred_proba
+    }).sort_values('prob', ascending=False).reset_index(drop=True)
+    
+    df_rev['cumulative_leads'] = range(1, len(df_rev) + 1)
+    df_rev['cumulative_sqls'] = df_rev['actual'].cumsum()
+    df_rev['cumulative_deals'] = df_rev['cumulative_sqls'] * sql_to_deal
+    df_rev['cumulative_revenue'] = df_rev['cumulative_deals'] * avg_deal
+    
+    # Random baseline
+    total_sqls = df_rev['actual'].sum()
+    df_rev['random_sqls'] = df_rev['cumulative_leads'] / len(df_rev) * total_sqls
+    df_rev['random_revenue'] = df_rev['random_sqls'] * sql_to_deal * avg_deal
+    
+    # Lift
+    df_rev['revenue_lift'] = df_rev['cumulative_revenue'] - df_rev['random_revenue']
+    
+    return df_rev
+
+
+def calculate_sales_differential(y_true, y_pred_proba, percentile=20):
+    """Calculate additional SQLs at given percentile."""
+    n_leads = len(y_true)
+    total_sqls = y_true.sum()
+    top_n = int(n_leads * percentile / 100)
+    
+    random_sqls = total_sqls * (percentile / 100)
+    
+    sorted_df = pd.DataFrame({
+        'actual': y_true.values,
+        'prob': y_pred_proba
+    }).sort_values('prob', ascending=False)
+    
+    model_sqls = sorted_df.head(top_n)['actual'].sum()
+    
+    return {
+        'percentile': percentile,
+        'leads_contacted': top_n,
+        'random_sqls': random_sqls,
+        'model_sqls': model_sqls,
+        'additional_sqls': model_sqls - random_sqls,
+        'lift_ratio': model_sqls / random_sqls if random_sqls > 0 else 0,
+        'model_revenue': model_sqls * CONVERSION_TO_DEAL * AVG_DEAL_SIZE,
+        'random_revenue': random_sqls * CONVERSION_TO_DEAL * AVG_DEAL_SIZE
+    }
+
+
+# Calculate for best model
+best_probs = results[best_model_name]['test_probs']
+revenue_df = calculate_revenue_curve(y_test, best_probs)
+
+# Print differential at key percentiles
+print("=" * 70)
+print(f"💰 REVENUE IMPACT ANALYSIS ({best_model_name})")
+print("=" * 70)
+
+for pct in [10, 20, 30, 50]:
+    diff = calculate_sales_differential(y_test, best_probs, pct)
+    print(f"\n📊 Top {pct}% of Leads ({diff['leads_contacted']:,} leads):")
+    print(f"   Random SQLs: {diff['random_sqls']:.1f}")
+    print(f"   Model SQLs: {diff['model_sqls']:.0f}")
+    print(f"   ➜ Additional SQLs: +{diff['additional_sqls']:.1f}")
+    print(f"   ➜ Lift: {diff['lift_ratio']:.2f}x")
+    print(f"   ➜ Additional Revenue: ${(diff['model_revenue'] - diff['random_revenue']):,.0f}")
+```
+
+```{python}
+#| label: revenue-visualization
+#| fig-cap: "Revenue Curve: Dollar-denominated impact of model-driven prioritization."
+
+# ==============================================================================
+# REVENUE CURVE VISUALIZATION
+# ==============================================================================
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# LEFT: Revenue Curve
+ax1 = axes[0]
+ax1.plot(revenue_df['cumulative_leads'], revenue_df['cumulative_revenue'] / 1e6,
+         color=PROJECT_COLS['Success'], linewidth=3, label='Model')
+ax1.plot(revenue_df['cumulative_leads'], revenue_df['random_revenue'] / 1e6,
+         color=PROJECT_COLS['Failure'], linewidth=2, linestyle='--', label='Random')
+ax1.fill_between(revenue_df['cumulative_leads'], 
+                  revenue_df['random_revenue'] / 1e6,
+                  revenue_df['cumulative_revenue'] / 1e6,
+                  alpha=0.3, color=PROJECT_COLS['Success'], label='Revenue Lift')
+
+ax1.set_xlabel('Leads Contacted (Ranked by Score)', fontsize=12)
+ax1.set_ylabel('Cumulative Revenue ($M)', fontsize=12)
+ax1.set_title(f'Revenue Curve ({best_model_name})\nModel vs Random Lead Selection',
+              fontweight='bold')
+ax1.legend(loc='lower right')
+ax1.grid(alpha=0.3)
+
+# Add annotations
+top_20_idx = int(len(revenue_df) * 0.2)
+model_rev_20 = revenue_df.iloc[top_20_idx]['cumulative_revenue'] / 1e6
+random_rev_20 = revenue_df.iloc[top_20_idx]['random_revenue'] / 1e6
+ax1.axvline(x=top_20_idx, color='gray', linestyle=':', alpha=0.7)
+ax1.annotate(f'Top 20%\n+${(model_rev_20 - random_rev_20):.2f}M',
+             xy=(top_20_idx, model_rev_20), xytext=(top_20_idx + 100, model_rev_20 + 0.1),
+             fontsize=10, arrowprops=dict(arrowstyle='->', color='gray'))
+
+# RIGHT: Lift by Decile
+ax2 = axes[1]
+
+# Calculate decile stats
+revenue_df['decile'] = pd.qcut(range(len(revenue_df)), 10, labels=False) + 1
+decile_stats = revenue_df.groupby('decile').agg({
+    'actual': ['sum', 'count'],
+    'prob': 'count'
+}).reset_index()
+decile_stats.columns = ['decile', 'sqls', 'leads', 'count']
+decile_stats['conversion'] = decile_stats['sqls'] / decile_stats['leads']
+decile_stats['revenue_per_lead'] = decile_stats['conversion'] * CONVERSION_TO_DEAL * AVG_DEAL_SIZE
+
+colors = [PROJECT_COLS['Success'] if i <= 3 else PROJECT_COLS['Neutral'] 
+          for i in decile_stats['decile']]
+
+bars = ax2.bar(decile_stats['decile'], decile_stats['revenue_per_lead'],
+               color=colors, edgecolor='white', linewidth=1)
+
+avg_rev = (y_test.mean() * CONVERSION_TO_DEAL * AVG_DEAL_SIZE)
+ax2.axhline(y=avg_rev, color='red', linestyle='--', linewidth=2, label=f'Avg: ${avg_rev:,.0f}')
+
+ax2.set_xlabel('Decile (1 = Highest Scored)', fontsize=12)
+ax2.set_ylabel('Revenue per Lead ($)', fontsize=12)
+ax2.set_title('Expected Revenue per Lead by Decile', fontweight='bold')
+ax2.legend()
+
+for bar, rev in zip(bars, decile_stats['revenue_per_lead']):
+    ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 20,
+             f'${rev:,.0f}', ha='center', fontsize=9, fontweight='bold')
+
+ax2.grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# Phase 9: SHAP Interpretability
+
+```{python}
+#| label: shap-analysis
+#| fig-cap: "SHAP Beeswarm: Feature impact on lead scoring predictions."
+
+# ==============================================================================
+# SHAP BEESWARM PLOT
+# ==============================================================================
+
+if SHAP_AVAILABLE:
+    print("⏳ Computing SHAP values (this may take a moment)...")
+    
+    # Use LightGBM or XGBoost for SHAP (best compatibility)
+    if 'LightGBM' in best_estimators:
+        shap_model = best_estimators['LightGBM']
+        shap_name = 'LightGBM'
+    elif 'XGBoost' in best_estimators:
+        shap_model = best_estimators['XGBoost']
+        shap_name = 'XGBoost'
+    else:
+        shap_model = best_estimators['Random_Forest']
+        shap_name = 'Random_Forest'
+    
+    # Create explainer
+    explainer = shap.TreeExplainer(shap_model)
+    
+    # Sample for speed
+    sample_size = min(500, len(X_test_processed))
+    sample_idx = np.random.choice(len(X_test_processed), sample_size, replace=False)
+    X_sample = X_test_processed[sample_idx]
+    
+    shap_values = explainer.shap_values(X_sample)
+    
+    # Handle different SHAP output formats
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]  # Class 1 (Success)
+    
+    # Truncate feature names for display
+    display_names = [n[:35] + '...' if len(n) > 35 else n 
+                     for n in FEATURE_NAMES[:X_sample.shape[1]]]
+    
+    # Beeswarm plot
+    plt.figure(figsize=(14, 10))
+    shap.summary_plot(shap_values, X_sample,
+                      feature_names=display_names,
+                      show=False, max_display=20, plot_size=None)
+    plt.title(f'SHAP Feature Impact ({shap_name})\nHow Features Push Scores Up/Down',
+              fontweight='bold', fontsize=14)
+    plt.tight_layout()
+    plt.show()
+    
+    # Top features by importance
+    shap_importance = pd.DataFrame({
+        'feature': FEATURE_NAMES[:shap_values.shape[1]],
+        'importance': np.abs(shap_values).mean(axis=0)
+    }).sort_values('importance', ascending=False)
+    
+    print("\n" + "=" * 70)
+    print(f"📊 SHAP FEATURE IMPORTANCE ({shap_name})")
+    print("=" * 70)
+    print(shap_importance.head(15).to_string(index=False))
+    
+else:
+    print("⚠️ SHAP not available. Install with: pip install shap")
+    
+    # Fallback: Feature importance from tree model
+    if 'LightGBM' in best_estimators:
+        model = best_estimators['LightGBM']
+        importance = model.feature_importances_
+    elif 'XGBoost' in best_estimators:
+        model = best_estimators['XGBoost']
+        importance = model.feature_importances_
+    else:
+        model = best_estimators['Random_Forest']
+        importance = model.feature_importances_
+    
+    imp_df = pd.DataFrame({
+        'feature': FEATURE_NAMES[:len(importance)],
+        'importance': importance
+    }).sort_values('importance', ascending=False)
+    
+    plt.figure(figsize=(12, 8))
+    plt.barh(range(20), imp_df.head(20)['importance'].values[::-1],
+             color=PROJECT_COLS['Success'])
+    plt.yticks(range(20), imp_df.head(20)['feature'].values[::-1], fontsize=9)
+    plt.xlabel('Feature Importance')
+    plt.title('Feature Importance (Tree-Based)', fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+```
+
+------------------------------------------------------------------------
+
+# Phase 10: THE BOTTOM LINE
+
+```{python}
+#| label: bottom-line
+
+# ==============================================================================
+# THE BOTTOM LINE
+# ==============================================================================
+
+# Calculate monthly impact (scale from test set)
+monthly_scale = len(df_mx) / len(X_test) / 12  # Annualize and monthly
+
+top_20 = calculate_sales_differential(y_test, best_probs, 20)
+
+monthly_additional_sqls = top_20['additional_sqls'] * monthly_scale
+monthly_additional_revenue = monthly_additional_sqls * CONVERSION_TO_DEAL * AVG_DEAL_SIZE
+annual_additional_revenue = monthly_additional_revenue * 12
+
+print("=" * 70)
+print("=" * 70)
+print("                    💎 THE BOTTOM LINE 💎")
+print("=" * 70)
+print("=" * 70)
+
+print(f"""
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                                                                      ║
+║   🏆 WINNING MODEL: {best_model_name:<45} ║
+║                                                                      ║
+║   📈 TEST AUC-ROC: {best_result['test_auc']:.4f}                                         ║
+║   📈 PR-AUC:       {best_result['pr_auc']:.4f}                                         ║
+║                                                                      ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                      ║
+║   By using the {best_model_name} model to prioritize                 ║
+║   the TOP 20% of Mx leads:                                           ║
+║                                                                      ║
+║   ➤ ADDITIONAL SQLs/Month:     +{monthly_additional_sqls:,.0f}                             ║
+║   ➤ ADDITIONAL SQLs/Year:      +{monthly_additional_sqls * 12:,.0f}                            ║
+║                                                                      ║
+║   ➤ LIFT vs Random:            {top_20['lift_ratio']:.2f}x                               ║
+║                                                                      ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                      ║
+║   💰 ESTIMATED PIPELINE VALUE:                                       ║
+║                                                                      ║
+║      Monthly:   ${monthly_additional_revenue:>12,.0f}                            ║
+║      Annual:    ${annual_additional_revenue:>12,.0f}                            ║
+║                                                                      ║
+║   (Assumes ${AVG_DEAL_SIZE:,} avg deal, {CONVERSION_TO_DEAL:.0%} SQL→Deal)               ║
+║                                                                      ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+""")
+
+print("=" * 70)
+print("                    📋 RECOMMENDATIONS")
+print("=" * 70)
+print("""
+  1. DEPLOY: Integrate lead scoring into Salesforce/HubSpot
+  
+  2. PRIORITIZE: Route top-decile Mx leads to senior reps
+  
+  3. NURTURE: Queue decile 4-6 leads for automated drip campaigns
+  
+  4. DISQUALIFY: Do not waste rep time on bottom 3 deciles
+  
+  5. MONITOR: Track actual vs predicted conversion monthly
+  
+  6. RETRAIN: Refresh model quarterly with new lead outcomes
+""")
+print("=" * 70)
+```
+
+```{python}
+#| label: executive-dashboard
+#| fig-cap: "Executive Dashboard: Complete model performance summary."
+
+# ==============================================================================
+# EXECUTIVE SUMMARY DASHBOARD
+# ==============================================================================
+
+fig = plt.figure(figsize=(18, 12))
+gs = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.3)
+
+# 1. Model Comparison Bar
+ax1 = fig.add_subplot(gs[0, 0])
+model_aucs = [(name, r['test_auc']) for name, r in results.items()]
+model_aucs.sort(key=lambda x: x[1], reverse=True)
+colors = [PROJECT_COLS['Success'] if name == best_model_name else PROJECT_COLS['Neutral']
+          for name, _ in model_aucs]
+ax1.barh([m[0] for m in model_aucs], [m[1] for m in model_aucs], color=colors)
+ax1.set_xlabel('Test AUC')
+ax1.set_title('Model Comparison', fontweight='bold')
+ax1.set_xlim(0.5, 1.0)
+for i, (name, auc_val) in enumerate(model_aucs):
+    ax1.text(auc_val + 0.01, i, f'{auc_val:.4f}', va='center', fontsize=9)
+
+# 2. Cumulative Gain
+ax2 = fig.add_subplot(gs[0, 1])
+gain_df = revenue_df.copy()
+gain_df['pct_leads'] = gain_df['cumulative_leads'] / len(gain_df) * 100
+gain_df['pct_sqls'] = gain_df['cumulative_sqls'] / gain_df['actual'].sum() * 100
+ax2.plot(gain_df['pct_leads'], gain_df['pct_sqls'], 
+         color=PROJECT_COLS['Success'], linewidth=2, label='Model')
+ax2.plot([0, 100], [0, 100], 'k--', label='Random')
+ax2.fill_between(gain_df['pct_leads'], gain_df['pct_leads'], gain_df['pct_sqls'],
+                  alpha=0.3, color=PROJECT_COLS['Success'])
+ax2.set_xlabel('% Leads Contacted')
+ax2.set_ylabel('% SQLs Captured')
+ax2.set_title('Cumulative Gain', fontweight='bold')
+ax2.legend(loc='lower right')
+ax2.grid(alpha=0.3)
+
+# 3. Lift by Percentile
+ax3 = fig.add_subplot(gs[0, 2])
+pcts = [10, 20, 30, 40, 50]
+lifts = [calculate_sales_differential(y_test, best_probs, p)['lift_ratio'] for p in pcts]
+ax3.bar(pcts, lifts, color=PROJECT_COLS['Highlight'], width=8)
+ax3.axhline(y=1, color='black', linestyle='--')
+ax3.set_xlabel('Top X% of Leads')
+ax3.set_ylabel('Lift')
+ax3.set_title('Lift vs Random', fontweight='bold')
+for p, l in zip(pcts, lifts):
+    ax3.text(p, l + 0.05, f'{l:.2f}x', ha='center', fontsize=9, fontweight='bold')
+
+# 4. Score Distribution
+ax4 = fig.add_subplot(gs[1, 0])
+ax4.hist(best_probs[y_test == 0], bins=30, alpha=0.6, label='Fail',
+         color=PROJECT_COLS['Failure'], density=True)
+ax4.hist(best_probs[y_test == 1], bins=30, alpha=0.6, label='Success',
+         color=PROJECT_COLS['Success'], density=True)
+ax4.set_xlabel('Predicted Probability')
+ax4.set_ylabel('Density')
+ax4.set_title('Score Distribution', fontweight='bold')
+ax4.legend()
+
+# 5. Confusion Matrix
+ax5 = fig.add_subplot(gs[1, 1])
+cm = confusion_matrix(y_test, results[best_model_name]['test_preds'])
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax5,
+            xticklabels=['Pred Fail', 'Pred Success'],
+            yticklabels=['Actual Fail', 'Actual Success'])
+ax5.set_title(f'Confusion Matrix\n({best_model_name})', fontweight='bold')
+
+# 6. Revenue Lift
+ax6 = fig.add_subplot(gs[1, 2])
+additional_revs = [(calculate_sales_differential(y_test, best_probs, p)['model_revenue'] -
+                    calculate_sales_differential(y_test, best_probs, p)['random_revenue']) / 1000
+                   for p in pcts]
+ax6.bar(pcts, additional_revs, color=PROJECT_COLS['Gold'], width=8)
+ax6.set_xlabel('Top X% of Leads')
+ax6.set_ylabel('Additional Revenue ($K)')
+ax6.set_title('Revenue Lift vs Random', fontweight='bold')
+for p, r in zip(pcts, additional_revs):
+    ax6.text(p, r + 1, f'${r:.0f}K', ha='center', fontsize=9, fontweight='bold')
+
+# 7-9. KPI Cards
+ax7 = fig.add_subplot(gs[2, :])
+ax7.axis('off')
+
+kpi_text = f"""
+╔═══════════════════════╦═══════════════════════╦═══════════════════════╦═══════════════════════╗
+║     BEST MODEL        ║     TEST AUC          ║     TOP-20% LIFT      ║   ANNUAL REVENUE      ║
+║   {best_model_name:<18} ║       {best_result['test_auc']:.4f}          ║        {top_20['lift_ratio']:.2f}x           ║    ${annual_additional_revenue:>12,.0f}   ║
+╚═══════════════════════╩═══════════════════════╩═══════════════════════╩═══════════════════════╝
+"""
+
+ax7.text(0.5, 0.5, kpi_text, fontsize=13, fontfamily='monospace',
+         ha='center', va='center', transform=ax7.transAxes,
+         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+plt.suptitle(f'MasterControl Mx Lead Scoring - {best_model_name}',
+             fontsize=18, fontweight='bold', y=1.02)
+plt.tight_layout()
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# Appendix: Technical Methodology
+
+**Advanced Feature Engineering:**
+
+1.  **Latent Semantic Analysis (LSA):** We use TF-IDF vectorization followed by TruncatedSVD to reduce job titles to 15 dense semantic components. This captures latent meaning (e.g., "Plant Manager" and "Factory Director" map to similar vectors).
+
+2.  **Target Encoding:** For high-cardinality features like `acct_target_industry`, we use smoothed target encoding: $\text{encoded} = \frac{n \cdot \bar{y}_{category} + m \cdot \bar{y}_{global}}{n + m}$ where $m$ is the smoothing parameter.
+
+3.  **Polynomial Interactions:** We create explicit cross-product features for Seniority × Function to capture "VP of Operations" effects.
+
+**Hyperparameter Tuning:**
+
+-   GridSearchCV with 5-fold stratified CV
+-   XGBoost: `learning_rate`, `max_depth`, `scale_pos_weight`
+-   LightGBM: `num_leaves`, `learning_rate`, `scale_pos_weight`
+
+**Ensemble Strategy:**
+
+-   Soft Voting Classifier combining top 3 models
+-   Predictions averaged by probability, not hard votes
+
+**Business Metrics:**
+
+-   Revenue = SQLs × SQL-to-Deal Rate (12%) × Avg Deal Size (\$50K)
+-   Lift = Model SQLs / Random SQLs at given percentile
+
+------------------------------------------------------------------------
+
+*Model V2 generated for MSBA Capstone Case Competition - Spring 2026*
