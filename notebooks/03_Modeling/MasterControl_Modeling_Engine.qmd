@@ -62,6 +62,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Scikit-learn Core
+import sklearn
 from sklearn.model_selection import (
     train_test_split, cross_val_score, StratifiedKFold,
     GridSearchCV, RandomizedSearchCV, cross_val_predict
@@ -70,6 +71,10 @@ from sklearn.preprocessing import (
     StandardScaler, OneHotEncoder, LabelEncoder,
     FunctionTransformer, PolynomialFeatures
 )
+
+# sklearn version compatibility for OneHotEncoder sparse parameter
+SKLEARN_VERSION = tuple(int(x) for x in sklearn.__version__.split('.')[:2])
+OHE_SPARSE_PARAM = 'sparse_output' if SKLEARN_VERSION >= (1, 2) else 'sparse'
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.compose import ColumnTransformer
@@ -433,8 +438,8 @@ class LSATextTransformer(BaseEstimator, TransformerMixin):
         
         return lsa_matrix
     
-    def get_feature_names_out(self):
-        return [f'LSA_{i}' for i in range(self.svd.n_components)]
+    def get_feature_names_out(self, input_features=None):
+        return np.array([f'LSA_{i}' for i in range(self.svd.n_components)])
 
 
 print("✓ Custom Transformers Defined: TargetEncoder, LSATextTransformer")
@@ -546,7 +551,7 @@ numeric_pipeline = Pipeline([
 # 2. Low-Cardinality Categorical Pipeline (OneHot)
 categorical_low_pipeline = Pipeline([
     ('imputer', SimpleImputer(strategy='constant', fill_value='Unknown')),
-    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ('onehot', OneHotEncoder(handle_unknown='ignore', **{OHE_SPARSE_PARAM: False}))
 ])
 
 # 3. High-Cardinality Pipeline (Target Encoding)
@@ -555,8 +560,8 @@ categorical_low_pipeline = Pipeline([
 # 4. Interaction Features Pipeline (OneHot with limit)
 interaction_pipeline = Pipeline([
     ('imputer', SimpleImputer(strategy='constant', fill_value='Unknown')),
-    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False, 
-                             max_categories=30))
+    ('onehot', OneHotEncoder(handle_unknown='ignore', max_categories=30,
+                             **{OHE_SPARSE_PARAM: False}))
 ])
 
 # 5. LSA Text Pipeline
@@ -692,7 +697,6 @@ models['XGBoost'] = {
     'model': xgb.XGBClassifier(
         random_state=RANDOM_STATE,
         n_jobs=N_JOBS,
-        use_label_encoder=False,
         eval_metric='logloss'
     ),
     'params': {
