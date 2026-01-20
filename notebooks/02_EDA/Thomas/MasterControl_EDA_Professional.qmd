@@ -77,6 +77,30 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==============================================================================
+# PATH CONFIGURATION (Repository Architecture)
+# ==============================================================================
+# This script lives at: notebooks/02_EDA/Thomas/
+# We need to go up 3 levels to reach repository root
+
+REPO_ROOT = Path.cwd().parents[2]  # notebooks/02_EDA/Thomas -> repo root
+DATA_DIR = REPO_ROOT / "data"
+OUTPUT_DIR = REPO_ROOT / "output"
+ARTIFACTS_DIR = Path("artifacts")  # Local for plots/temp files
+
+# Ensure output directory exists
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Data file paths
+RAW_DATA_PATH = DATA_DIR / "QAL Performance for MSBA.csv"
+CLEANED_DATA_PATH = OUTPUT_DIR / "Cleaned_QAL_Performance_for_MSBA.csv"
+
+print(f"✓ Repository Root: {REPO_ROOT}")
+print(f"✓ Data Directory: {DATA_DIR}")
+print(f"✓ Output Directory: {OUTPUT_DIR}")
+print(f"✓ Raw Data File: {RAW_DATA_PATH} (exists: {RAW_DATA_PATH.exists()})")
+
+# ==============================================================================
 # THE STRATEGIC PALETTE
 # ==============================================================================
 # Psychological color coding for executive presentations:
@@ -148,22 +172,13 @@ def clean_and_engineer(filepath=None):
     """
 
     # =========================================================================
-    # 1. ROBUST LOADING
+    # 1. DATA LOADING (Using Repository Architecture)
     # =========================================================================
     if filepath is None:
-        possible_paths = [
-            Path.cwd() / "data" / "QAL Performance for MSBA.csv",
-            Path.cwd().parent / "data" / "QAL Performance for MSBA.csv",
-            Path.cwd().parent.parent / "data" / "QAL Performance for MSBA.csv",
-            Path.cwd().parent.parent.parent / "data" / "QAL Performance for MSBA.csv"
-        ]
-        for p in possible_paths:
-            if p.exists():
-                filepath = p
-                break
+        filepath = RAW_DATA_PATH  # Use configured path from setup
 
-    if filepath is None or not filepath.exists():
-        raise FileNotFoundError("❌ CRITICAL: Data file not found. Check your paths.")
+    if not filepath.exists():
+        raise FileNotFoundError(f"❌ CRITICAL: Data file not found at {filepath}")
 
     df = pd.read_csv(filepath)
 
@@ -1224,6 +1239,7 @@ generate_executive_summary(df)
 def export_enriched_dataset(df):
     """
     Export the competition-grade enriched dataset for modeling.
+    Saves to the repository's output/ directory.
     """
     export_cols = [
         # IDs
@@ -1257,10 +1273,10 @@ def export_enriched_dataset(df):
     export_cols = [c for c in export_cols if c in df.columns]
     df_export = df[export_cols].copy()
 
-    output_path = Path.cwd() / "Cleaned_QAL_Competition_Grade.csv"
-    df_export.to_csv(output_path, index=False)
+    # Use configured output path from setup
+    df_export.to_csv(CLEANED_DATA_PATH, index=False)
 
-    print(f"✓ Exported: {output_path}")
+    print(f"✓ Exported: {CLEANED_DATA_PATH}")
     print(f"  Rows: {len(df_export):,}")
     print(f"  Columns: {len(df_export.columns)}")
 

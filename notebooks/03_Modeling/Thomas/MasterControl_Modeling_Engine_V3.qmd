@@ -138,6 +138,25 @@ from joblib import Parallel, delayed
 import multiprocessing
 
 # ==============================================================================
+# PATH CONFIGURATION (Repository Architecture)
+# ==============================================================================
+# This script lives at: notebooks/03_Modeling/Thomas/
+# We need to go up 3 levels to reach repository root
+
+REPO_ROOT = Path.cwd().parents[2]  # notebooks/03_Modeling/Thomas -> repo root
+DATA_DIR = REPO_ROOT / "data"
+OUTPUT_DIR = REPO_ROOT / "output"
+ARTIFACTS_DIR = Path("artifacts")  # Local for plots/model artifacts
+
+# Ensure directories exist
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Data file paths
+RAW_DATA_PATH = DATA_DIR / "QAL Performance for MSBA.csv"
+CLEANED_DATA_PATH = OUTPUT_DIR / "Cleaned_QAL_Performance_for_MSBA.csv"
+
+# ==============================================================================
 # GLOBAL CONFIGURATION
 # ==============================================================================
 
@@ -180,6 +199,11 @@ warnings.filterwarnings('ignore')
 print("=" * 70)
 print("PRODUCTION MODELING ENVIRONMENT V3 - GRANDMASTER EDITION")
 print("=" * 70)
+print(f"Repository Root: {REPO_ROOT}")
+print(f"Data Directory: {DATA_DIR}")
+print(f"Output Directory: {OUTPUT_DIR}")
+print(f"Raw Data File: {RAW_DATA_PATH} (exists: {RAW_DATA_PATH.exists()})")
+print("-" * 70)
 print(f"Random State: {RANDOM_STATE}")
 print(f"CPU Cores: {multiprocessing.cpu_count()}")
 print(f"CV Folds: {CV_FOLDS}")
@@ -202,25 +226,17 @@ print("=" * 70)
 #| label: data-loading
 
 # ==============================================================================
-# DATA LOADING
+# DATA LOADING (Using Repository Architecture)
 # ==============================================================================
 
 def load_data():
-    """Load raw data with intelligent path detection."""
-    possible_paths = [
-        Path.cwd() / "data" / "QAL Performance for MSBA.csv",
-        Path.cwd().parent / "data" / "QAL Performance for MSBA.csv",
-        Path.cwd().parent.parent / "data" / "QAL Performance for MSBA.csv",
-        Path.cwd().parent.parent.parent / "data" / "QAL Performance for MSBA.csv"
-    ]
+    """Load raw data from the configured data directory."""
+    if not RAW_DATA_PATH.exists():
+        raise FileNotFoundError(f"❌ CRITICAL: Data file not found at {RAW_DATA_PATH}")
 
-    for p in possible_paths:
-        if p.exists():
-            df = pd.read_csv(p)
-            print(f"Data loaded from: {p}")
-            return df
-
-    raise FileNotFoundError("Could not find QAL Performance for MSBA.csv")
+    df = pd.read_csv(RAW_DATA_PATH)
+    print(f"✓ Data loaded from: {RAW_DATA_PATH}")
+    return df
 
 df_raw = load_data()
 
