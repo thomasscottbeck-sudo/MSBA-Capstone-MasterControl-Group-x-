@@ -29,24 +29,20 @@ editor: visual
 
 # Executive Summary
 
-**The Mission:** MasterControl's Mx product converts at ~12.7% vs Qx at ~19.7%. This 7-point gap represents millions in lost revenue. Our analysis identifies the **exact micro-segments** where Mx wins, enabling surgical targeting.
+**The Mission:** MasterControl's Mx product converts at \~12.7% vs Qx at \~19.7%. This 7-point gap represents millions in lost revenue. Our analysis identifies the **exact micro-segments** where Mx wins, enabling surgical targeting.
 
 **Key Findings Preview:**
 
-1. **The Velocity Problem:** Mx leads stall 23 days longer than Qx leads
-2. **The Golden Segment:** Directors in Pharma/In-House convert at 28% for Mx
-3. **The Zombie Opportunity:** 847 "Recycled" leads are recoverable with the right nurture
-4. **The Power Modifier:** "Global" in title = 2.1x conversion lift
+1.  **The Velocity Problem:** Mx leads stall 23 days longer than Qx leads
+2.  **The Golden Segment:** Directors in Pharma/In-House convert at 28% for Mx
+3.  **The Zombie Opportunity:** 847 "Recycled" leads are recoverable with the right nurture
+4.  **The Power Modifier:** "Global" in title = 2.1x conversion lift
 
----
+------------------------------------------------------------------------
 
 # Phase 1: The Business Reality
 
-**Architect's Note:**
-In case competitions, judges don't care about code; they care about **Revenue Lift**.
-We are not just "cleaning data"; we are hunting for the **"Mx Yield Gap."**
-MasterControl's legacy product (Qx) is a machine. Their new product (Mx) is struggling.
-Our mission is to find the *exact* micro-segments (Title x Industry x Model) where Mx actually works, so Sales can stop calling the wrong people.
+**Architect's Note:** In case competitions, judges don't care about code; they care about **Revenue Lift**. We are not just "cleaning data"; we are hunting for the **"Mx Yield Gap."** MasterControl's legacy product (Qx) is a machine. Their new product (Mx) is struggling. Our mission is to find the *exact* micro-segments (Title x Industry x Model) where Mx actually works, so Sales can stop calling the wrong people.
 
 ## 1.1 Setup & Configuration
 
@@ -137,19 +133,16 @@ print(f"✓ Visual Strategy: Success={PROJECT_COLS['Success']} | Failure={PROJEC
 print(f"✓ Statistical Rigor: α={ALPHA}, Min N={MIN_SAMPLE_SIZE}")
 ```
 
----
+------------------------------------------------------------------------
 
 # Phase 2: Feature Engineering (The Secret Weapon)
 
-**Architect's Note:**
-Raw data is useless. `Job Title` is a mess of 4,000+ strings.
-If you simply One-Hot Encode "Job Title", you will fail due to dimensionality.
-**We win** by parsing this unstructured text into FOUR structured dimensions:
+**Architect's Note:** Raw data is useless. `Job Title` is a mess of 4,000+ strings. If you simply One-Hot Encode "Job Title", you will fail due to dimensionality. **We win** by parsing this unstructured text into FOUR structured dimensions:
 
-1. **Authority (Seniority):** Can they sign the check? (VP, Director)
-2. **Domain (Function):** Do they care about *Quality* or *Manufacturing*?
-3. **Scope (Power Modifier):** Is this "Global VP" or "Site Manager"? (NEW)
-4. **Record Completeness:** How serious is this buyer? (NEW)
+1.  **Authority (Seniority):** Can they sign the check? (VP, Director)
+2.  **Domain (Function):** Do they care about *Quality* or *Manufacturing*?
+3.  **Scope (Power Modifier):** Is this "Global VP" or "Site Manager"? (NEW)
+4.  **Record Completeness:** How serious is this buyer? (NEW)
 
 ## 2.1 The Enhanced Data Pipeline
 
@@ -321,14 +314,11 @@ def clean_and_engineer(filepath=None):
 df = clean_and_engineer()
 ```
 
----
+------------------------------------------------------------------------
 
 # Phase 3: The Gap Analysis (The Problem)
 
-**Architect's Note:**
-Before fixing anything, we must quantify the pain.
-We need to prove statistically that **Mx is underperforming Qx**.
-This chart is your "Slide 1" in the executive deck.
+**Architect's Note:** Before fixing anything, we must quantify the pain. We need to prove statistically that **Mx is underperforming Qx**. This chart is your "Slide 1" in the executive deck.
 
 ## 3.1 The Core Performance Gap
 
@@ -428,17 +418,11 @@ def plot_performance_gap(df):
 gap_results = plot_performance_gap(df)
 ```
 
----
+------------------------------------------------------------------------
 
 # Phase 4: Advanced Signal Detection
 
-**Architect's Note:**
-This is where we separate from other teams. Standard EDA stops at univariate analysis.
-We go deeper with:
-- **Pipeline Velocity:** Are Mx leads slower to convert?
-- **Power Modifiers:** Does "Global" in a title matter?
-- **The Power Trio:** Seniority × Industry × Model interaction
-- **Zombie Analysis:** Where are we wasting "Recycled" leads?
+**Architect's Note:** This is where we separate from other teams. Standard EDA stops at univariate analysis. We go deeper with: - **Pipeline Velocity:** Are Mx leads slower to convert? - **Power Modifiers:** Does "Global" in a title matter? - **The Power Trio:** Seniority × Industry × Model interaction - **Zombie Analysis:** Where are we wasting "Recycled" leads?
 
 ## 4.1 Pipeline Velocity Analysis (NEW)
 
@@ -542,10 +526,7 @@ velocity_stats = analyze_pipeline_velocity(df)
 
 ## 4.2 The "Zombie" Lead Analysis (Near-Miss Opportunity)
 
-**Architect's Note:**
-"Recycled" leads are NOT failures - they're timing mismatches.
-If Mx has more recycled leads in specific segments, the product-market fit exists but the timing doesn't.
-This is a nurture campaign opportunity worth millions.
+**Architect's Note:** "Recycled" leads are NOT failures - they're timing mismatches. If Mx has more recycled leads in specific segments, the product-market fit exists but the timing doesn't. This is a nurture campaign opportunity worth millions.
 
 ```{python}
 #| label: zombie-analysis
@@ -615,9 +596,7 @@ zombie_analysis = analyze_zombie_leads(df)
 
 ## 4.3 Power Modifier Analysis (NEW)
 
-**Architect's Note:**
-Does "Global Quality Director" convert higher than "Site Quality Director"?
-This is the kind of nuanced insight that wins competitions.
+**Architect's Note:** Does "Global Quality Director" convert higher than "Site Quality Director"? This is the kind of nuanced insight that wins competitions.
 
 ```{python}
 #| label: power-modifier
@@ -696,10 +675,7 @@ power_modifier_stats = analyze_power_modifiers(df)
 
 ## 4.4 The "Power Trio" Interaction (Seniority × Industry × Model)
 
-**Architect's Note:**
-This is the most valuable analysis in the deck.
-We're looking for the EXACT micro-segment: "VP + Pharma + In-House"
-vs "Manager + MedDev + CDMO". This is surgical targeting.
+**Architect's Note:** This is the most valuable analysis in the deck. We're looking for the EXACT micro-segment: "VP + Pharma + In-House" vs "Manager + MedDev + CDMO". This is surgical targeting.
 
 ```{python}
 #| label: power-trio
@@ -793,9 +769,7 @@ power_trio_stats = analyze_power_trio(df, 'Mx')
 
 ## 4.5 Algorithmic Segment Discovery (Decision Tree)
 
-**Architect's Note:**
-Instead of manually searching for interactions, let the algorithm find the optimal splits.
-A shallow Decision Tree IS an interaction detector.
+**Architect's Note:** Instead of manually searching for interactions, let the algorithm find the optimal splits. A shallow Decision Tree IS an interaction detector.
 
 ```{python}
 #| label: decision-tree
@@ -1094,13 +1068,11 @@ def rank_features(df, product=None):
 mi_results = rank_features(df, 'Mx')
 ```
 
----
+------------------------------------------------------------------------
 
 # Phase 5: Record Completeness Analysis
 
-**Architect's Note:**
-HYPOTHESIS: Companies that fill out more CRM fields are more serious buyers.
-This is a proxy for "buyer sophistication" that other teams will miss.
+**Architect's Note:** HYPOTHESIS: Companies that fill out more CRM fields are more serious buyers. This is a proxy for "buyer sophistication" that other teams will miss.
 
 ```{python}
 #| label: completeness-analysis
@@ -1171,7 +1143,7 @@ def analyze_completeness(df, product='Mx'):
 completeness_stats = analyze_completeness(df, 'Mx')
 ```
 
----
+------------------------------------------------------------------------
 
 # Phase 6: Executive Summary & Export
 
@@ -1285,7 +1257,7 @@ def export_enriched_dataset(df):
 df_export = export_enriched_dataset(df)
 ```
 
----
+------------------------------------------------------------------------
 
 # Appendix: Statistical Methodology
 
@@ -1295,6 +1267,6 @@ df_export = export_enriched_dataset(df)
 
 **Decision Tree Interactions:** We use shallow decision trees (depth ≤ 3) as interaction detectors. The tree's split structure reveals which feature combinations are most predictive.
 
----
+------------------------------------------------------------------------
 
 *Document generated for MSBA Capstone Case Competition - Spring 2026*

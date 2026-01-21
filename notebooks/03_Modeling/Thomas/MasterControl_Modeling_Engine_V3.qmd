@@ -40,11 +40,11 @@ editor: visual
 
 **Key Metrics (V3 vs V2):**
 
-| Metric | V2 Baseline | V3 Target |
-|--------|-------------|-----------|
-| Test AUC | ~0.86 | 0.87+ |
-| Calibration Error | Uncalibrated | <5% |
-| Business Metric | Top-20% Lift | **Max Profit Threshold** |
+| Metric            | V2 Baseline  | V3 Target                |
+|-------------------|--------------|--------------------------|
+| Test AUC          | \~0.86       | 0.87+                    |
+| Calibration Error | Uncalibrated | \<5%                     |
+| Business Metric   | Top-20% Lift | **Max Profit Threshold** |
 
 ------------------------------------------------------------------------
 
