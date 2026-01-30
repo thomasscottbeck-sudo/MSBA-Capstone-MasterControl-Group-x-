@@ -19,3 +19,5 @@ Thumbs.db
 # 4. Local User, GPT & AI Tool Context
 Custom GPT Uploads/
 .claude/
+# Custom local ignore folder
+.gitignore_folder/
