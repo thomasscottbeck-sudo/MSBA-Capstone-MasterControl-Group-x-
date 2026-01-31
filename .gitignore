@@ -1,4 +1,4 @@
-﻿# MasterControl Project Git Ignore
+# MasterControl Project Git Ignore
 # 1. Ignore Data Files (CRITICAL SECURITY)
 data/*.csv
 data/*.xlsx
@@ -21,3 +21,5 @@ Custom GPT Uploads/
 .claude/
 # Custom local ignore folder
 .gitignore_folder/
+
+**/*.quarto_ipynb

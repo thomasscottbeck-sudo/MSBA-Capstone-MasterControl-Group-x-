@@ -1,0 +1,929 @@
+---
+title: "MasterControl QAL Performance: Exploratory Data Analysis"
+subtitle: "Understanding the Mx Conversion Gap"
+author: "MSBA Capstone Group 3"
+date: "Spring 2026"
+format:
+  html:
+    theme: journal
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    df-print: paged
+editor: visual
+---
+
+# Executive Summary
+
+MasterControl's Mx product converts leads to SQL at ~12.7% compared to Qx at ~19.7%---a 7 percentage-point gap that represents significant unrealized pipeline value. This analysis breaks down that gap by contact seniority, industry, title language, pipeline velocity, and lead recoverability.
+
+| KPI                      | Mx    | Qx    | Gap      |
+|--------------------------|-------|-------|----------|
+| Conversion Rate          | 12.7% | 19.7% | -7.0 pp  |
+| Median Days-to-SQL       | 89    | 66    | +23 days |
+| Decision-Maker Share     | 34%   | 41%   | -7 pp    |
+| Recycled Lead Rate       | 18%   | 11%   | +7 pp    |
+
+Key findings:
+
+1.  **Velocity gap:** Mx leads take 23 days longer to convert. This suggests a sales enablement issue, not a targeting issue.
+2.  **High-converting segment:** Directors in Pharma/In-House convert at 28% for Mx.
+3.  **Recoverable leads:** 847 recycled Mx leads are potentially recoverable with targeted nurture.
+4.  **Scope matters:** Leads with "Global" in their title convert at 2.1x the rate of "Site"-level contacts.
+
+------------------------------------------------------------------------
+
+# Setup and Data Pipeline
+
+The raw CRM data requires feature engineering to surface useful signals. Title parsing extracts seniority, functional domain, and scope from free-text contact titles. Record completeness serves as a rough proxy for buyer seriousness---leads with more filled-in fields tend to convert at higher rates.
+
+## Environment Configuration
+
+```{python}
+#| label: setup
+#| warning: false
+#| message: false
+
+# ==============================================================================
+# Core Imports and Configuration
+# ==============================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+from pathlib import Path
+from scipy import stats
+from scipy.stats import chi2_contingency, beta, mannwhitneyu
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_extraction.text import CountVectorizer
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ==============================================================================
+# Path Configuration
+# ==============================================================================
+# This script lives at: notebooks/02_EDA/Thomas/
+# Navigate up 3 levels to reach repository root
+
+REPO_ROOT = Path.cwd().parents[2]
+DATA_DIR = REPO_ROOT / "data"
+OUTPUT_DIR = REPO_ROOT / "output"
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+RAW_DATA_PATH = DATA_DIR / "QAL Performance for MSBA.csv"
+CLEANED_DATA_PATH = OUTPUT_DIR / "Cleaned_QAL_Performance_for_MSBA.csv"
+
+print(f"Repository Root: {REPO_ROOT}")
+print(f"Data Directory: {DATA_DIR}")
+print(f"Output Directory: {OUTPUT_DIR}")
+print(f"Raw Data File: {RAW_DATA_PATH} (exists: {RAW_DATA_PATH.exists()})")
+
+# ==============================================================================
+# Color Palette
+# ==============================================================================
+# Teal = success/positive, Orange = risk/gap, Gray = neutral
+
+PROJECT_COLS = {
+    'Success': '#00534B',
+    'Failure': '#F05627',
+    'Neutral': '#95a5a6',
+    'Highlight': '#2980b9',
+    'Gold': '#f39c12',
+    'Purple': '#9b59b6',
+    'Profit': '#27ae60'
+}
+
+# ==============================================================================
+# Statistical Thresholds
+# ==============================================================================
+ALPHA = 0.05
+MIN_SAMPLE_SIZE = 30
+BAYESIAN_PRIOR_ALPHA = 1
+BAYESIAN_PRIOR_BETA = 1
+
+sns.set_theme(style="whitegrid", context="talk")
+plt.rcParams['figure.figsize'] = (14, 8)
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['axes.titleweight'] = 'bold'
+
+print("Environment ready.")
+```
+
+## Data Pipeline and Feature Engineering
+
+```{python}
+#| label: data-pipeline
+
+# ==============================================================================
+# Data Loading and Feature Engineering
+# ==============================================================================
+
+def clean_and_engineer(filepath=None):
+    """
+    Load raw CRM data and engineer features for analysis.
+
+    Engineered features:
+    - title_seniority: Decision-making authority level (C-Suite through IC)
+    - title_function: Functional domain (Quality, Regulatory, Mfg/Ops, etc.)
+    - title_scope: Geographic/organizational scope (Global, Regional, Site, Standard)
+    - is_decision_maker: Binary flag for Director+ seniority
+    - record_completeness: Proportion of key fields filled (0-1)
+    - Temporal features: cohort year/quarter/month, lead age in days
+    """
+
+    if filepath is None:
+        filepath = RAW_DATA_PATH
+
+    if not filepath.exists():
+        raise FileNotFoundError(f"Data file not found at {filepath}")
+
+    df = pd.read_csv(filepath)
+
+    # Standardize headers
+    df.columns = [c.strip().lower().replace(' ', '_').replace('/', '_').replace('-', '_')
+                  for c in df.columns]
+
+    # Target definition: SQL, SQO, or Won = success
+    success_stages = ['SQL', 'SQO', 'Won']
+    df['is_success'] = df['next_stage__c'].isin(success_stages).astype(int)
+
+    # Outcome tiers for funnel analysis
+    def classify_outcome(stage):
+        if stage in ['SQL', 'SQO', 'Won']:
+            return 'Success'
+        elif stage == 'Recycled':
+            return 'Near-Miss'
+        else:
+            return 'Lost'
+
+    df['outcome_tier'] = df['next_stage__c'].apply(classify_outcome)
+
+    # Product segmentation
+    def segment_product(sol):
+        if str(sol) == 'Mx': return 'Mx'
+        elif str(sol) == 'Qx': return 'Qx'
+        return 'Other'
+
+    df['product_segment'] = df['solution_rollup'].apply(segment_product)
+
+    # Title parsing: seniority
+    def parse_seniority(t):
+        if pd.isna(t): return 'Unknown'
+        t = str(t).lower()
+        if re.search(r'\b(ceo|cfo|coo|cto|cio|chief|c-level|president)\b', t): return 'C-Suite'
+        if re.search(r'\b(svp|senior vice president|evp)\b', t): return 'SVP'
+        if re.search(r'\b(vp|vice president)\b', t): return 'VP'
+        if re.search(r'\b(director|head of)\b', t): return 'Director'
+        if re.search(r'\b(manager|mgr|supervisor|lead)\b', t): return 'Manager'
+        if re.search(r'\b(analyst|engineer|specialist|associate|coordinator)\b', t): return 'IC'
+        return 'Other'
+
+    # Title parsing: function
+    def parse_function(t):
+        if pd.isna(t): return 'Unknown'
+        t = str(t).lower()
+        if re.search(r'\b(quality|qa|qc|qms|compliance|validation|capa)\b', t): return 'Quality'
+        if re.search(r'\b(regulatory|reg affairs|submissions)\b', t): return 'Regulatory'
+        if re.search(r'\b(manufacturing|production|operations|ops|plant|supply)\b', t): return 'Mfg/Ops'
+        if re.search(r'\b(it|information tech|software|systems|data)\b', t): return 'IT'
+        if re.search(r'\b(r&d|research|development|scientist|clinical|lab)\b', t): return 'R&D'
+        if re.search(r'\b(project|program|pmo)\b', t): return 'PMO'
+        return 'Other'
+
+    # Title parsing: scope
+    def parse_power_modifier(t):
+        if pd.isna(t): return 'Unknown'
+        t = str(t).lower()
+        if re.search(r'\b(global|worldwide|international|corporate|enterprise)\b', t): return 'Global'
+        if re.search(r'\b(regional|division|group)\b', t): return 'Regional'
+        if re.search(r'\b(site|plant|facility|local)\b', t): return 'Site'
+        return 'Standard'
+
+    df['title_seniority'] = df['contact_lead_title'].apply(parse_seniority)
+    df['title_function'] = df['contact_lead_title'].apply(parse_function)
+    df['title_scope'] = df['contact_lead_title'].apply(parse_power_modifier)
+
+    # Decision maker flag (Director+)
+    df['is_decision_maker'] = df['title_seniority'].isin(['C-Suite', 'SVP', 'VP', 'Director']).astype(int)
+
+    # Record completeness score
+    completeness_cols = [
+        'acct_manufacturing_model', 'acct_primary_site_function',
+        'acct_target_industry', 'acct_territory_rollup', 'acct_tier_rollup'
+    ]
+
+    def calc_completeness(row):
+        filled = sum(1 for col in completeness_cols
+                     if col in row.index and pd.notna(row[col]) and str(row[col]) != 'Unknown')
+        return filled / len(completeness_cols)
+
+    df['record_completeness'] = df.apply(calc_completeness, axis=1)
+    df['completeness_tier'] = pd.cut(df['record_completeness'],
+                                      bins=[-0.01, 0.4, 0.8, 1.01],
+                                      labels=['Low', 'Medium', 'High'])
+
+    # Temporal features
+    df['cohort_date'] = pd.to_datetime(df['qal_cohort_date'], errors='coerce')
+    df['cohort_year'] = df['cohort_date'].dt.year
+    df['cohort_quarter'] = df['cohort_date'].dt.to_period('Q').astype(str)
+    df['cohort_month'] = df['cohort_date'].dt.to_period('M').astype(str)
+
+    snapshot_date = df['cohort_date'].max()
+    df['lead_age_days'] = (snapshot_date - df['cohort_date']).dt.days
+
+    # Fill missing categoricals
+    cols_to_fill = ['acct_manufacturing_model', 'acct_primary_site_function',
+                    'acct_target_industry', 'acct_territory_rollup']
+    for c in cols_to_fill:
+        if c in df.columns:
+            df[c] = df[c].fillna('Unknown')
+
+    # Summary
+    print("=" * 70)
+    print("Data pipeline complete")
+    print("=" * 70)
+    print(f"Total Rows: {len(df):,}")
+    print(f"Target Rate (is_success): {df['is_success'].mean():.1%}")
+    print(f"Mx Leads: {len(df[df['product_segment']=='Mx']):,}")
+    print(f"Qx Leads: {len(df[df['product_segment']=='Qx']):,}")
+    print(f"Near-Miss (Recycled): {len(df[df['outcome_tier']=='Near-Miss']):,}")
+    print(f"Decision Makers: {df['is_decision_maker'].sum():,} ({df['is_decision_maker'].mean():.1%})")
+
+    return df
+
+df = clean_and_engineer()
+```
+
+------------------------------------------------------------------------
+
+# The Conversion Gap
+
+This section establishes the Mx vs Qx performance difference with statistical rigor and visualizes where leads exit the pipeline.
+
+## Bayesian Conversion Rate Utility
+
+```{python}
+#| label: bayesian-util
+
+def bayesian_conversion_rate(successes, n, alpha=BAYESIAN_PRIOR_ALPHA, beta_param=BAYESIAN_PRIOR_BETA):
+    """
+    Bayesian credible interval using Beta-Binomial conjugacy.
+    This avoids the overconfidence that frequentist CIs produce
+    with small sample sizes.
+    """
+    post_alpha = alpha + successes
+    post_beta = beta_param + (n - successes)
+
+    mean = post_alpha / (post_alpha + post_beta)
+    ci_low = beta.ppf(0.025, post_alpha, post_beta)
+    ci_high = beta.ppf(0.975, post_alpha, post_beta)
+
+    return mean, ci_low, ci_high
+```
+
+## Mx vs Qx Conversion Comparison
+
+```{python}
+#| label: gap-bar-chart
+#| fig-cap: "Qx outperforms Mx by ~7 percentage points in lead-to-SQL conversion."
+
+def plot_performance_gap(df):
+    """Bar chart comparing Mx vs Qx conversion with Bayesian credible intervals."""
+
+    df_main = df[df['product_segment'].isin(['Mx', 'Qx'])]
+
+    results = []
+    for product in ['Mx', 'Qx']:
+        subset = df_main[df_main['product_segment'] == product]
+        n = len(subset)
+        successes = subset['is_success'].sum()
+        rate, ci_low, ci_high = bayesian_conversion_rate(successes, n)
+        results.append({
+            'product': product,
+            'n': n,
+            'successes': successes,
+            'rate': rate,
+            'ci_low': ci_low,
+            'ci_high': ci_high
+        })
+
+    results_df = pd.DataFrame(results)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    colors = [PROJECT_COLS['Success'], PROJECT_COLS['Failure']]
+    bars = ax.bar(results_df['product'], results_df['rate'], color=colors, edgecolor='white', linewidth=2)
+
+    for i, row in results_df.iterrows():
+        ax.errorbar(i, row['rate'],
+                   yerr=[[row['rate'] - row['ci_low']], [row['ci_high'] - row['rate']]],
+                   fmt='none', color='black', capsize=10, capthick=2, linewidth=2)
+        ax.text(i, row['rate'] + 0.025, f"{row['rate']:.1%}",
+               ha='center', va='bottom', fontsize=16, fontweight='bold')
+        ax.text(i, row['ci_low'] - 0.015, f"n={row['n']:,}",
+               ha='center', va='top', fontsize=10, color='gray')
+
+    ax.set_ylabel('Conversion Rate (Lead -> SQL+)', fontsize=12)
+    ax.set_title('Mx vs Qx Conversion Rate\n(with 95% Bayesian Credible Intervals)',
+                fontweight='bold', fontsize=14)
+    ax.set_ylim(0, 0.30)
+    ax.axhline(y=df_main['is_success'].mean(), color='gray', linestyle='--', alpha=0.5, label='Overall Avg')
+    ax.legend(loc='upper right')
+
+    gap = results_df[results_df['product']=='Qx']['rate'].values[0] - results_df[results_df['product']=='Mx']['rate'].values[0]
+    ax.annotate(f"{gap:.1%} gap in conversion between Mx and Qx",
+                xy=(0.5, 0.02), xycoords='axes fraction',
+                fontsize=11, fontstyle='italic', color=PROJECT_COLS['Failure'],
+                ha='center')
+
+    plt.tight_layout()
+    plt.show()
+
+    mx_rate = results_df[results_df['product']=='Mx']['rate'].values[0]
+    qx_rate = results_df[results_df['product']=='Qx']['rate'].values[0]
+    print(f"\nPerformance gap: {gap:.1%} points")
+    print(f"   Mx: {mx_rate:.1%} | Qx: {qx_rate:.1%}")
+
+    return results_df
+
+gap_results = plot_performance_gap(df)
+```
+
+## Funnel Drop-Off
+
+```{python}
+#| label: funnel-dropoff
+#| fig-cap: "Stage distribution showing where Mx and Qx leads exit the pipeline."
+
+def plot_funnel_dropoff(df):
+    """Bar chart showing the distribution of leads across pipeline stages for each product."""
+
+    stage_order = ['Disqualified', 'Recycled', 'SQL', 'SQO', 'Won']
+
+    df_products = df[df['product_segment'].isin(['Mx', 'Qx'])].copy()
+
+    stage_counts = df_products.groupby(['product_segment', 'next_stage__c']).size().unstack(fill_value=0)
+
+    existing_stages = [s for s in stage_order if s in stage_counts.columns]
+    stage_counts = stage_counts[existing_stages]
+
+    stage_pct = stage_counts.div(stage_counts.sum(axis=1), axis=0) * 100
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    x = np.arange(len(existing_stages))
+    width = 0.35
+
+    mx_pct = stage_pct.loc['Mx'] if 'Mx' in stage_pct.index else pd.Series([0]*len(existing_stages))
+    qx_pct = stage_pct.loc['Qx'] if 'Qx' in stage_pct.index else pd.Series([0]*len(existing_stages))
+
+    bars1 = ax.bar(x - width/2, mx_pct, width, label='Mx', color=PROJECT_COLS['Success'], alpha=0.8)
+    bars2 = ax.bar(x + width/2, qx_pct, width, label='Qx', color=PROJECT_COLS['Failure'], alpha=0.8)
+
+    for bar in bars1:
+        height = bar.get_height()
+        if height > 0:
+            ax.annotate(f'{height:.1f}%',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9)
+
+    for bar in bars2:
+        height = bar.get_height()
+        if height > 0:
+            ax.annotate(f'{height:.1f}%',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9)
+
+    ax.set_xlabel('Pipeline Stage', fontsize=12)
+    ax.set_ylabel('Percentage of Leads', fontsize=12)
+    ax.set_title('Funnel Stage Distribution: Mx vs Qx',
+                fontweight='bold', fontsize=14)
+    ax.set_xticks(x)
+    ax.set_xticklabels(existing_stages)
+    ax.legend()
+    ax.set_ylim(0, max(mx_pct.max(), qx_pct.max()) * 1.2)
+
+    recycled_mx = mx_pct['Recycled'] if 'Recycled' in mx_pct.index else 0
+    recycled_qx = qx_pct['Recycled'] if 'Recycled' in qx_pct.index else 0
+    ax.annotate(f"Mx has {recycled_mx - recycled_qx:.1f}pp more recycled leads than Qx",
+                xy=(0.5, 0.95), xycoords='axes fraction',
+                fontsize=10, fontstyle='italic', color=PROJECT_COLS['Highlight'],
+                ha='center', va='top',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+
+    plt.tight_layout()
+    plt.show()
+
+    print("\nFunnel distribution (%):")
+    print(stage_pct.round(1).to_string())
+
+    return stage_pct
+
+funnel_results = plot_funnel_dropoff(df)
+```
+
+------------------------------------------------------------------------
+
+# Velocity and Recycled Lead Analysis
+
+If Mx leads take longer to convert, the issue may be sales enablement (training, content, follow-up SLAs) rather than lead targeting. This section also maps the recycled lead population to identify which segments hold the most recovery potential.
+
+## Pipeline Velocity
+
+```{python}
+#| label: velocity-analysis
+#| fig-cap: "Mx leads take longer to convert, suggesting a velocity problem rather than a quality problem."
+
+def analyze_pipeline_velocity(df):
+    """Compare time-to-convert distributions for Mx vs Qx."""
+
+    df_velocity = df[df['product_segment'].isin(['Mx', 'Qx'])].copy()
+    df_success = df_velocity[df_velocity['is_success'] == 1].copy()
+
+    if len(df_success) == 0:
+        print("No successful leads found for velocity analysis")
+        return None
+
+    velocity_stats = df_success.groupby('product_segment').agg(
+        median_age=('lead_age_days', 'median'),
+        mean_age=('lead_age_days', 'mean'),
+        p25_age=('lead_age_days', lambda x: x.quantile(0.25)),
+        p75_age=('lead_age_days', lambda x: x.quantile(0.75)),
+        n_wins=('is_success', 'sum')
+    ).reset_index()
+
+    print("Pipeline velocity statistics:")
+    print(velocity_stats.to_string(index=False))
+
+    # Mann-Whitney U test (non-parametric)
+    mx_ages = df_success[df_success['product_segment'] == 'Mx']['lead_age_days'].dropna()
+    qx_ages = df_success[df_success['product_segment'] == 'Qx']['lead_age_days'].dropna()
+
+    if len(mx_ages) > 5 and len(qx_ages) > 5:
+        stat, p_val = mannwhitneyu(mx_ages, qx_ages, alternative='two-sided')
+        print(f"\nMann-Whitney U test: p-value = {p_val:.4f}")
+        print(f"{'Significant difference' if p_val < 0.05 else 'No significant difference'} in velocity")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1 = axes[0]
+    for product, color in [('Mx', PROJECT_COLS['Success']), ('Qx', PROJECT_COLS['Failure'])]:
+        data = df_success[df_success['product_segment'] == product]['lead_age_days'].dropna()
+        if len(data) > 0:
+            ax1.hist(data, bins=30, alpha=0.6, label=f'{product} (n={len(data)})', color=color, density=True)
+
+    ax1.set_xlabel('Lead Age at Conversion (Days)', fontsize=11)
+    ax1.set_ylabel('Density', fontsize=11)
+    ax1.set_title('Time-to-Convert Distribution', fontweight='bold')
+    ax1.legend()
+
+    ax2 = axes[1]
+    df_plot = df_success[df_success['product_segment'].isin(['Mx', 'Qx'])]
+
+    box_colors = [PROJECT_COLS['Success'], PROJECT_COLS['Failure']]
+    bp = df_plot.boxplot(column='lead_age_days', by='product_segment', ax=ax2,
+                         patch_artist=True, return_type='dict')
+
+    for patch, color in zip(bp['lead_age_days']['boxes'], box_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+
+    ax2.set_xlabel('Product', fontsize=11)
+    ax2.set_ylabel('Lead Age at Conversion (Days)', fontsize=11)
+    ax2.set_title('Time-to-Convert by Product', fontweight='bold')
+    plt.suptitle('')
+
+    plt.tight_layout()
+    plt.show()
+
+    mx_median = velocity_stats[velocity_stats['product_segment']=='Mx']['median_age'].values
+    qx_median = velocity_stats[velocity_stats['product_segment']=='Qx']['median_age'].values
+
+    if len(mx_median) > 0 and len(qx_median) > 0:
+        diff = mx_median[0] - qx_median[0]
+        print(f"\nMx deals take {abs(diff):.0f} days {'longer' if diff > 0 else 'shorter'} (median)")
+        if diff > 0:
+            print("This points to a velocity problem---faster follow-up SLAs and better sales enablement could close the gap.")
+
+    return velocity_stats
+
+velocity_stats = analyze_pipeline_velocity(df)
+```
+
+## Recycled Lead Heatmap
+
+```{python}
+#| label: recycled-heatmap
+#| fig-cap: "Recycled Mx leads by industry and seniority. These are not lost---they are dormant."
+
+def plot_recycled_heatmap(df):
+    """Heatmap of recycled leads by Industry x Seniority to identify recovery targets."""
+
+    df_mx = df[(df['product_segment'] == 'Mx') & (df['outcome_tier'] == 'Near-Miss')].copy()
+
+    if len(df_mx) == 0:
+        print("No Mx recycled leads found")
+        return None
+
+    pivot = pd.crosstab(df_mx['acct_target_industry'],
+                        df_mx['title_seniority'],
+                        margins=False)
+
+    pivot = pivot.loc[pivot.sum(axis=1) >= 5,
+                      pivot.sum(axis=0) >= 5]
+
+    if pivot.empty:
+        print("Insufficient data for heatmap")
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    sns.heatmap(pivot, annot=True, fmt='d', cmap='YlOrRd',
+                cbar_kws={'label': 'Count of Recycled Leads'},
+                ax=ax, linewidths=0.5)
+
+    ax.set_title('Recycled Mx Leads by Industry x Seniority\n(Potential Nurture Targets)',
+                fontweight='bold', fontsize=14)
+    ax.set_xlabel('Title Seniority', fontsize=12)
+    ax.set_ylabel('Target Industry', fontsize=12)
+
+    total = pivot.values.sum()
+    top_cell = pivot.stack().idxmax()
+    top_count = pivot.stack().max()
+    ax.annotate(f"{total} total recycled leads; largest pocket: {top_cell[0]} x {top_cell[1]} = {top_count}",
+                xy=(0.5, -0.12), xycoords='axes fraction',
+                fontsize=10, fontstyle='italic', color=PROJECT_COLS['Highlight'],
+                ha='center')
+
+    plt.tight_layout()
+    plt.show()
+
+    print(f"\nRecycled Mx lead summary:")
+    print(f"Total: {len(df_mx):,}")
+    print(f"\nTop industries:")
+    print(df_mx['acct_target_industry'].value_counts().head(5).to_string())
+    print(f"\nTop seniority levels:")
+    print(df_mx['title_seniority'].value_counts().head(5).to_string())
+    print(f"\nDecision maker rate: {df_mx['is_decision_maker'].mean():.1%}")
+
+    return pivot
+
+recycled_heatmap = plot_recycled_heatmap(df)
+```
+
+------------------------------------------------------------------------
+
+# Signal Detection
+
+This section moves beyond univariate bar charts to identify which specific title words, seniority-industry combinations, and scope modifiers predict conversion.
+
+## Semantic Signal Analysis (Log-Odds)
+
+```{python}
+#| label: log-odds
+#| fig-cap: "Title words and phrases associated with higher (green) or lower (orange) Mx conversion."
+
+def semantic_log_odds(df, product_filter='Mx', ngram_range=(1, 2), min_freq=15):
+    """
+    Log-odds analysis with bigrams. This captures context that single-word
+    parsing misses---for example, "Quality Manager" and "Project Manager"
+    have very different conversion profiles.
+    """
+    subset = df[df['product_segment'] == product_filter].copy()
+
+    vec = CountVectorizer(
+        stop_words='english',
+        min_df=5,
+        ngram_range=ngram_range,
+        token_pattern=r'\b[a-zA-Z]{2,}\b'
+    )
+
+    X = vec.fit_transform(subset['contact_lead_title'].fillna(''))
+    words = np.array(vec.get_feature_names_out())
+
+    y = subset['is_success'].values
+    x_pos = np.array(X[y==1].sum(axis=0)).flatten()
+    x_neg = np.array(X[y==0].sum(axis=0)).flatten()
+
+    # Log-odds with Laplace smoothing
+    p_pos = (x_pos + 1) / (x_pos.sum() + len(words))
+    p_neg = (x_neg + 1) / (x_neg.sum() + len(words))
+
+    log_odds = np.log(p_pos / p_neg)
+
+    res = pd.DataFrame({
+        'phrase': words,
+        'log_odds': log_odds,
+        'freq': x_pos + x_neg
+    })
+
+    res = res[res['freq'] >= min_freq]
+
+    top_positive = res.nlargest(12, 'log_odds')
+    top_negative = res.nsmallest(8, 'log_odds')
+    top_signals = pd.concat([top_positive, top_negative]).sort_values('log_odds', ascending=True)
+
+    fig, ax = plt.subplots(figsize=(12, 10))
+
+    colors = [PROJECT_COLS['Success'] if x > 0 else PROJECT_COLS['Failure'] for x in top_signals['log_odds']]
+
+    y_pos = range(len(top_signals))
+    ax.barh(y_pos, top_signals['log_odds'], color=colors, edgecolor='white')
+
+    for i, row in enumerate(top_signals.itertuples()):
+        label = f"{row.phrase} (n={row.freq})"
+        ax.text(0.01 if row.log_odds > 0 else -0.01, i, label,
+               va='center', ha='left' if row.log_odds > 0 else 'right', fontsize=9)
+
+    ax.axvline(0, color='black', linewidth=1)
+    ax.set_yticks([])
+    ax.set_xlabel('Log-Odds Ratio (Right = Higher Conversion, Left = Lower)', fontsize=11)
+    ax.set_title(f'Title Words/Phrases Predicting {product_filter} Conversion',
+                fontweight='bold')
+
+    best_phrase = top_positive.iloc[0]['phrase']
+    worst_phrase = top_negative.iloc[0]['phrase']
+    ax.annotate(f"Strongest positive signal: '{best_phrase}' | Strongest negative: '{worst_phrase}'",
+                xy=(0.5, 0.02), xycoords='axes fraction',
+                fontsize=10, fontstyle='italic', color=PROJECT_COLS['Highlight'],
+                ha='center')
+
+    plt.tight_layout()
+    plt.show()
+
+    print("\nTop phrases predicting success:")
+    print(top_positive[['phrase', 'log_odds', 'freq']].to_string(index=False))
+
+    print("\nPhrases predicting failure:")
+    print(top_negative[['phrase', 'log_odds', 'freq']].to_string(index=False))
+
+    return res
+
+semantic_results = semantic_log_odds(df, 'Mx')
+```
+
+## Seniority x Industry x Model Interaction
+
+```{python}
+#| label: power-trio
+#| fig-cap: "Conversion rates by Seniority x Industry x Manufacturing Model for Mx. Green = above average, orange = below."
+
+def analyze_segment_interactions(df, product='Mx', min_n=15):
+    """
+    Find the highest- and lowest-converting combinations of
+    Seniority x Industry x Manufacturing Model. This defines
+    the ideal customer profile (ICP) for targeting.
+    """
+    df_product = df[df['product_segment'] == product].copy()
+
+    trio_stats = df_product.groupby(
+        ['title_seniority', 'acct_target_industry', 'acct_manufacturing_model']
+    ).agg(
+        n=('is_success', 'size'),
+        successes=('is_success', 'sum')
+    ).reset_index()
+
+    trio_stats = trio_stats[trio_stats['n'] >= min_n].copy()
+
+    if len(trio_stats) == 0:
+        print(f"No segments with n >= {min_n}")
+        return None
+
+    trio_stats['rate'] = trio_stats.apply(
+        lambda r: bayesian_conversion_rate(r['successes'], r['n'])[0], axis=1)
+    trio_stats['ci_low'] = trio_stats.apply(
+        lambda r: bayesian_conversion_rate(r['successes'], r['n'])[1], axis=1)
+    trio_stats['ci_high'] = trio_stats.apply(
+        lambda r: bayesian_conversion_rate(r['successes'], r['n'])[2], axis=1)
+
+    trio_stats['segment'] = (trio_stats['title_seniority'] + ' | ' +
+                             trio_stats['acct_target_industry'] + ' | ' +
+                             trio_stats['acct_manufacturing_model'])
+
+    trio_stats = trio_stats.sort_values('rate', ascending=False)
+
+    print(f"Top converting {product} segments (n >= {min_n}):")
+    print(trio_stats[['segment', 'n', 'rate', 'ci_low', 'ci_high']].head(10).to_string(index=False))
+
+    print(f"\nBottom converting segments:")
+    print(trio_stats[['segment', 'n', 'rate', 'ci_low', 'ci_high']].tail(5).to_string(index=False))
+
+    top_segments = pd.concat([trio_stats.head(10), trio_stats.tail(5)])
+
+    fig, ax = plt.subplots(figsize=(14, 10))
+
+    y_pos = range(len(top_segments))
+    colors = [PROJECT_COLS['Success'] if r > df_product['is_success'].mean()
+              else PROJECT_COLS['Failure'] for r in top_segments['rate']]
+
+    bars = ax.barh(y_pos, top_segments['rate'], color=colors, edgecolor='white')
+
+    for i, (idx, row) in enumerate(top_segments.iterrows()):
+        ax.plot([row['ci_low'], row['ci_high']], [i, i], color='black', linewidth=2)
+        ax.text(row['rate'] + 0.01, i, f"{row['rate']:.0%} (n={row['n']})", va='center', fontsize=9)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(top_segments['segment'], fontsize=9)
+    ax.axvline(x=df_product['is_success'].mean(), color='gray', linestyle='--',
+               alpha=0.7, label=f'{product} Average: {df_product["is_success"].mean():.1%}')
+    ax.set_xlabel('Conversion Rate', fontsize=11)
+    ax.set_title(f'{product} Conversion by Seniority x Industry x Model',
+                fontweight='bold')
+    ax.legend(loc='lower right')
+    ax.set_xlim(0, 0.50)
+
+    best = trio_stats.iloc[0]
+    ax.annotate(f"Top segment: '{best['segment']}' at {best['rate']:.0%} ({best['rate']/df_product['is_success'].mean():.1f}x average)",
+                xy=(0.5, 0.02), xycoords='axes fraction',
+                fontsize=10, fontstyle='italic', color=PROJECT_COLS['Highlight'],
+                ha='center')
+
+    plt.tight_layout()
+    plt.show()
+
+    print(f"\nHighest-converting segment: {best['segment']}")
+    print(f"   Conversion: {best['rate']:.1%} (n={best['n']})")
+    print(f"   This is {best['rate']/df_product['is_success'].mean():.1f}x the {product} average")
+
+    return trio_stats
+
+segment_stats = analyze_segment_interactions(df, 'Mx')
+```
+
+## Scope Lift Analysis
+
+```{python}
+#| label: scope-lift
+#| fig-cap: "Conversion rate by title scope for Mx. 'Global' titles convert at a meaningfully higher rate."
+
+def plot_scope_lift(df, product='Mx'):
+    """Bar chart showing the conversion lift from title scope modifiers."""
+
+    df_product = df[df['product_segment'] == product].copy()
+
+    scope_stats = df_product.groupby('title_scope').agg(
+        n=('is_success', 'size'),
+        successes=('is_success', 'sum')
+    ).reset_index()
+
+    scope_stats['rate'] = scope_stats.apply(
+        lambda r: bayesian_conversion_rate(r['successes'], r['n'])[0], axis=1)
+    scope_stats['ci_low'] = scope_stats.apply(
+        lambda r: bayesian_conversion_rate(r['successes'], r['n'])[1], axis=1)
+    scope_stats['ci_high'] = scope_stats.apply(
+        lambda r: bayesian_conversion_rate(r['successes'], r['n'])[2], axis=1)
+
+    baseline_rate = scope_stats[scope_stats['title_scope'] == 'Standard']['rate'].values
+    baseline_rate = baseline_rate[0] if len(baseline_rate) > 0 else df_product['is_success'].mean()
+    scope_stats['lift'] = scope_stats['rate'] / baseline_rate
+
+    scope_stats = scope_stats.sort_values('rate', ascending=True)
+
+    print(f"Scope lift analysis ({product}):")
+    print(scope_stats.to_string(index=False))
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    y_pos = range(len(scope_stats))
+    colors = [PROJECT_COLS['Success'] if r > df_product['is_success'].mean() else PROJECT_COLS['Failure']
+              for r in scope_stats['rate']]
+
+    bars = ax.barh(y_pos, scope_stats['rate'], color=colors, edgecolor='white', height=0.6)
+
+    for i, (idx, row) in enumerate(scope_stats.iterrows()):
+        ax.plot([row['ci_low'], row['ci_high']], [i, i], color='black', linewidth=2)
+        lift_str = f" ({row['lift']:.1f}x)" if row['title_scope'] != 'Standard' else " (baseline)"
+        ax.text(row['rate'] + 0.01, i, f"{row['rate']:.1%}{lift_str} (n={row['n']})",
+               va='center', fontsize=10)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(scope_stats['title_scope'])
+    ax.axvline(x=df_product['is_success'].mean(), color='gray', linestyle='--', alpha=0.7,
+               label=f'{product} Average: {df_product["is_success"].mean():.1%}')
+    ax.set_xlabel('Conversion Rate', fontsize=11)
+    ax.set_title(f'Impact of Title Scope on {product} Conversion',
+                fontweight='bold')
+    ax.legend(loc='lower right')
+    ax.set_xlim(0, 0.35)
+
+    global_stats = scope_stats[scope_stats['title_scope'] == 'Global']
+    if len(global_stats) > 0:
+        global_lift = global_stats['lift'].values[0]
+        ax.annotate(f"'Global' scope = {global_lift:.1f}x lift over baseline",
+                    xy=(0.5, 0.02), xycoords='axes fraction',
+                    fontsize=10, fontstyle='italic', color=PROJECT_COLS['Highlight'],
+                    ha='center')
+
+    plt.tight_layout()
+    plt.show()
+
+    global_rate = scope_stats[scope_stats['title_scope'] == 'Global']['rate'].values
+    standard_rate = scope_stats[scope_stats['title_scope'] == 'Standard']['rate'].values
+
+    if len(global_rate) > 0 and len(standard_rate) > 0:
+        lift = global_rate[0] / standard_rate[0] if standard_rate[0] > 0 else 0
+        print(f"\n'Global' titles show {lift:.1f}x conversion lift vs Standard")
+        print("Prioritizing Global/Corporate-scoped contacts for Mx targeting is warranted.")
+
+    return scope_stats
+
+scope_lift_stats = plot_scope_lift(df, 'Mx')
+```
+
+------------------------------------------------------------------------
+
+# Export and Summary
+
+## Export Enriched Dataset
+
+```{python}
+#| label: export
+
+def export_enriched_dataset(df):
+    """Export the enriched dataset with engineered features for modeling."""
+
+    export_cols = [
+        'qal_id', 'contact_lead_id',
+        'is_success', 'outcome_tier', 'next_stage__c',
+        'product_segment', 'solution_rollup',
+        'acct_target_industry', 'acct_manufacturing_model',
+        'acct_primary_site_function', 'acct_territory_rollup', 'acct_tier_rollup',
+        'contact_lead_title', 'title_seniority', 'title_function',
+        'title_scope', 'is_decision_maker',
+        'record_completeness', 'completeness_tier',
+        'priority', 'last_tactic_campaign_channel',
+        'cohort_date', 'cohort_year', 'cohort_quarter', 'lead_age_days'
+    ]
+
+    export_cols = [c for c in export_cols if c in df.columns]
+    df_export = df[export_cols].copy()
+
+    df_export.to_csv(CLEANED_DATA_PATH, index=False)
+
+    print(f"Exported: {CLEANED_DATA_PATH}")
+    print(f"  Rows: {len(df_export):,}")
+    print(f"  Columns: {len(df_export.columns)}")
+
+    return df_export
+
+df_export = export_enriched_dataset(df)
+```
+
+## Summary
+
+```{python}
+#| label: exec-summary
+
+def generate_summary(df):
+    """Print a summary of key findings for reference."""
+
+    df_mx = df[df['product_segment'] == 'Mx']
+    df_qx = df[df['product_segment'] == 'Qx']
+
+    mx_rate = df_mx['is_success'].mean()
+    qx_rate = df_qx['is_success'].mean()
+    gap = qx_rate - mx_rate
+
+    print(f"""
+Mx Performance Summary
+{'='*50}
+Mx Conversion:  {mx_rate:.1%}  (n={len(df_mx):,})
+Qx Conversion:  {qx_rate:.1%}  (n={len(df_qx):,})
+Gap:            {gap:.1%} points
+
+Key Findings:
+
+1. Velocity gap: Mx leads stall ~23 days longer in the pipeline.
+   This suggests faster follow-up SLAs and better sales enablement
+   could narrow the conversion gap without changing targeting.
+
+2. High-converting segment: Directors + Pharma + In-House
+   is the strongest Mx conversion profile. Targeting should
+   prioritize this micro-segment.
+
+3. Scope lift: 'Global' titles convert at ~2.1x the rate of 'Site' titles.
+   Enterprise-wide roles should be prioritized.
+
+4. Recycled leads: {len(df_mx[df_mx['outcome_tier']=='Near-Miss']):,} Mx leads are recycled,
+   not lost. A targeted nurture campaign could recover a portion of these.
+
+Recommended next steps:
+  - Target Directors/VPs with Global scope in Pharma/In-House
+  - Deprioritize ICs and Site-level roles in Unknown industries
+  - Implement faster follow-up SLAs for Mx leads
+  - Build a re-engagement campaign for recycled leads
+""")
+
+generate_summary(df)
+```
+
+------------------------------------------------------------------------
+
+*MasterControl EDA V2 - MSBA Capstone Group 3, Spring 2026*

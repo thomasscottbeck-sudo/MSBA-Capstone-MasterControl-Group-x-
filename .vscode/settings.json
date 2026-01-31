@@ -1,5 +1,40 @@
 {
+  // =========================================================================
+  // Python Environment
+  // =========================================================================
   "python.defaultInterpreterPath": "C:\\Users\\thoma\\.conda\\envs\\thesis\\python.exe",
-  "editor.codeLens": true,
-  "quarto.codeLens.enabled": true
+  "python.terminal.activateEnvironment": true,
+
+  // =========================================================================
+  // Quarto Settings
+  // =========================================================================
+  "quarto.render.previewType": "internal",
+  "quarto.render.renderOnSave": false,
+  "quarto.cells.background.enabled": true,
+
+  // =========================================================================
+  // Jupyter / Notebook Settings
+  // =========================================================================
+  "notebook.output.wordWrap": true,
+  "notebook.output.scrolling": false,
+  "jupyter.askForKernelRestart": false,
+
+  // =========================================================================
+  // Editor Experience for .qmd files
+  // =========================================================================
+  "editor.wordWrap": "on",
+  "editor.minimap.enabled": false,
+  "editor.bracketPairColorization.enabled": true,
+
+  // =========================================================================
+  // File associations
+  // =========================================================================
+  "[quarto]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "other": true,
+      "comments": false,
+      "strings": false
+    }
+  }
 }

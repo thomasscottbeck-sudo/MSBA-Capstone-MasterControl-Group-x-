@@ -1,0 +1,2161 @@
+---
+title: "MasterControl Lead Scoring Model V10"
+subtitle: "Predicting QAL-to-SQL Conversion with Domain-Informed Feature Engineering"
+author: "MSBA Capstone Group 3"
+date: "Spring 2026"
+format:
+  html:
+    theme: journal
+    toc: true
+    toc-depth: 3
+    df-print: paged
+    code-fold: true
+    code-tools: true
+  pdf:
+    documentclass: article
+    geometry: margin=1in
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Executive Summary
+
+MasterControl's Mx product converts leads to SQL at roughly 12.7%, compared to 19.7% for Qx---a 7 percentage-point gap that represents significant unrealized pipeline value. This notebook builds a lead scoring model that encodes domain-specific signals the raw CRM data does not surface on its own.
+
+The key modeling decisions in this version stem from patterns identified during EDA:
+
+| Finding | What It Means | How the Model Handles It |
+|---------|---------------|--------------------------|
+| External Demand Gen and Email leads account for ~33% of volume but only ~4% conversion | These channels generate cost without proportional return | `channel_efficiency` tiers leads by source quality (Premium / Standard / Low-Value) |
+| Leads with "Not Enough Info" or "Non-manufacturing" convert at 30-46% | These are likely consultants or small firms that standard firmographic scoring misses | `is_hidden_gem` flag captures this segment |
+| "Webinar" P1 leads convert at lower rates than generic leads | Priority labels do not reflect actual buying intent | `intent_strength` re-encodes priority as an ordinal based on observed conversion |
+| Pharma/BioTech companies carry higher deal values | Company size alone is a poor proxy for budget | `capital_density_score` weights size by industry budget multiplier |
+
+**Changes from V9:** Stripped branding language, clarified rationale for each engineered feature, retained all modeling logic and code.
+
+------------------------------------------------------------------------
+
+# Setup and Environment
+
+This section loads dependencies and configures the modeling environment. CatBoost requires a compatibility wrapper for sklearn 1.6+ due to changes in tag handling.
+
+```{python}
+#| label: setup
+#| warning: false
+#| message: false
+
+# ==============================================================================
+# Dependencies and Environment
+# ==============================================================================
+
+import subprocess
+import sys
+
+def install_if_missing(package_name, import_name=None, pip_name=None):
+    """Install a package if not already available."""
+    import_name = import_name or package_name.lower()
+    pip_name = pip_name or import_name
+
+    try:
+        __import__(import_name)
+        return True
+    except ImportError:
+        print(f"{package_name}: Not found. Installing...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", pip_name, "-q"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            print(f"{package_name}: Installed successfully!")
+            return True
+        except subprocess.CalledProcessError:
+            print(f"{package_name}: Installation failed. Will use fallback.")
+            return False
+
+# ==============================================================================
+# Install Dependencies
+# ==============================================================================
+print("Checking and installing dependencies...")
+
+install_if_missing("pandas")
+install_if_missing("numpy")
+install_if_missing("matplotlib")
+install_if_missing("seaborn")
+install_if_missing("scikit-learn", import_name="sklearn", pip_name="scikit-learn")
+install_if_missing("pyprojroot", import_name="pyprojroot")
+install_if_missing("CatBoost", import_name="catboost")
+install_if_missing("XGBoost", import_name="xgboost")
+install_if_missing("LightGBM", import_name="lightgbm")
+install_if_missing("SHAP", import_name="shap")
+
+# ==============================================================================
+# Core Imports
+# ==============================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+import time
+import re
+import multiprocessing
+from pathlib import Path
+from datetime import datetime
+from pyprojroot import here
+from types import SimpleNamespace
+
+warnings.filterwarnings('ignore')
+
+# ==============================================================================
+# Parallelism
+# ==============================================================================
+N_JOBS = multiprocessing.cpu_count() - 1
+print(f"Using {N_JOBS} cores (of {multiprocessing.cpu_count()} available)")
+
+# Core ML
+from sklearn.model_selection import (
+    train_test_split, StratifiedKFold, RandomizedSearchCV, cross_val_predict
+)
+from sklearn.preprocessing import (
+    StandardScaler, LabelEncoder, FunctionTransformer
+)
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin, clone
+
+# Metrics
+from sklearn.metrics import (
+    roc_auc_score, roc_curve, precision_recall_curve, average_precision_score,
+    classification_report, confusion_matrix, brier_score_loss, log_loss,
+    f1_score, precision_score, recall_score
+)
+
+# Calibration
+from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+
+# Ensemble & Stacking
+from sklearn.ensemble import (
+    RandomForestClassifier, GradientBoostingClassifier,
+    StackingClassifier, VotingClassifier
+)
+from sklearn.linear_model import LogisticRegression
+
+# ==============================================================================
+# CatBoost sklearn 1.6+ Compatibility Wrapper
+# ==============================================================================
+# sklearn 1.6+ requires __sklearn_tags__ to return a dot-notation namespace.
+# CatBoost does not natively support this, so a thin wrapper is needed.
+
+CATBOOST_AVAILABLE = False
+CATBOOST_RAW_AVAILABLE = False
+
+try:
+    from catboost import CatBoostClassifier as CatBoostRaw
+    CATBOOST_RAW_AVAILABLE = True
+    print("CatBoost: Raw import successful")
+except ImportError:
+    print("CatBoost: Not available")
+
+if CATBOOST_RAW_AVAILABLE:
+    class SklearnCatBoost(BaseEstimator, ClassifierMixin):
+        """
+        Thin sklearn-compatible wrapper around CatBoost.
+        Handles the __sklearn_tags__ requirement introduced in sklearn 1.6+.
+        """
+        _estimator_type = "classifier"
+
+        def __init__(self, iterations=500, depth=6, learning_rate=0.1,
+                     l2_leaf_reg=3, border_count=64, random_state=42,
+                     verbose=0, thread_count=1):
+            self.iterations = iterations
+            self.depth = depth
+            self.learning_rate = learning_rate
+            self.l2_leaf_reg = l2_leaf_reg
+            self.border_count = border_count
+            self.random_state = random_state
+            self.verbose = verbose
+            self.thread_count = thread_count
+            self._model = None
+
+        def __sklearn_tags__(self):
+            tags = SimpleNamespace()
+            tags.estimator_type = "classifier"
+            tags.classifier_tags = SimpleNamespace()
+            tags.regressor_tags = None
+            tags.transformer_tags = None
+            tags.input_tags = SimpleNamespace(
+                allow_nan=True,
+                pairwise=False,
+                one_d_labels=True,
+                two_d_labels=False
+            )
+            tags.target_tags = SimpleNamespace(
+                required_y=True,
+                one_d_labels=True,
+                two_d_labels=False
+            )
+            return tags
+
+        def fit(self, X, y, **fit_params):
+            self._model = CatBoostRaw(
+                iterations=self.iterations,
+                depth=self.depth,
+                learning_rate=self.learning_rate,
+                l2_leaf_reg=self.l2_leaf_reg,
+                border_count=self.border_count,
+                random_state=self.random_state,
+                verbose=self.verbose,
+                thread_count=self.thread_count,
+                allow_writing_files=False
+            )
+            self._model.fit(X, y, **fit_params)
+            self.classes_ = np.unique(y)
+            return self
+
+        def predict(self, X):
+            return self._model.predict(X).flatten().astype(int)
+
+        def predict_proba(self, X):
+            return self._model.predict_proba(X)
+
+        @property
+        def feature_importances_(self):
+            return self._model.get_feature_importance()
+
+    CATBOOST_AVAILABLE = True
+    print("CatBoost: sklearn-compatible wrapper created")
+
+# ==============================================================================
+# Other Boosting Libraries
+# ==============================================================================
+
+XGBOOST_AVAILABLE = False
+try:
+    from xgboost import XGBClassifier
+    XGBOOST_AVAILABLE = True
+    print("XGBoost: Ready")
+except ImportError:
+    print("XGBoost: Not available")
+
+LIGHTGBM_AVAILABLE = False
+try:
+    from lightgbm import LGBMClassifier
+    LIGHTGBM_AVAILABLE = True
+    print("LightGBM: Ready")
+except ImportError:
+    print("LightGBM: Not available")
+
+# Target Encoding (sklearn 1.3+)
+TARGET_ENCODER_AVAILABLE = False
+try:
+    from sklearn.preprocessing import TargetEncoder
+    TARGET_ENCODER_AVAILABLE = True
+    print("TargetEncoder: Ready (sklearn 1.3+)")
+except ImportError:
+    print("TargetEncoder: Not available (using manual implementation)")
+
+# SHAP
+SHAP_AVAILABLE = False
+try:
+    import shap
+    SHAP_AVAILABLE = True
+    print("SHAP: Ready")
+except ImportError:
+    print("SHAP: Not available")
+
+# ==============================================================================
+# Path Configuration
+# ==============================================================================
+DATA_DIR = here("data")
+OUTPUT_DIR = here("output")
+
+CLEANED_DATA_PATH = here("output/Cleaned_QAL_Performance_for_MSBA.csv")
+RAW_DATA_PATH = here("data/QAL Performance for MSBA.csv")
+
+if CLEANED_DATA_PATH.exists():
+    DATA_PATH = CLEANED_DATA_PATH
+    print(f"\nUsing cleaned data: {CLEANED_DATA_PATH}")
+else:
+    DATA_PATH = RAW_DATA_PATH
+    print(f"\nFallback to raw data: {RAW_DATA_PATH}")
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+RANDOM_STATE = 42
+CV_FOLDS = 5
+N_ITER_SEARCH = 50
+TEST_SIZE = 0.20
+VAL_SIZE = 0.15
+
+# Text processing
+LSA_COMPONENTS = 20
+TFIDF_MAX_FEATURES = 500
+
+# Business parameters
+COST_PER_CALL = 50
+VALUE_PER_SQL = 6000
+
+# SHAP sampling
+SHAP_BACKGROUND_SAMPLES = 100
+SHAP_TEST_SAMPLES = 200
+
+# Colors
+PROJECT_COLS = {
+    'Success': '#00534B',
+    'Failure': '#F05627',
+    'Neutral': '#95a5a6',
+    'Highlight': '#2980b9',
+    'Gold': '#f39c12',
+    'Purple': '#9b59b6',
+    'Profit': '#27ae60',
+    'Toxic': '#e74c3c',
+    'Premium': '#2ecc71'
+}
+
+sns.set_theme(style="whitegrid", context="talk")
+plt.rcParams['figure.figsize'] = (14, 8)
+plt.rcParams['axes.titleweight'] = 'bold'
+
+print(f"\nRandom State: {RANDOM_STATE}")
+print(f"CV Folds: {CV_FOLDS}, Search Iterations: {N_ITER_SEARCH}")
+print(f"LSA Components: {LSA_COMPONENTS}")
+print(f"Business: ${COST_PER_CALL} cost/call, ${VALUE_PER_SQL} value/SQL")
+print(f"CatBoost sklearn-compatible: {CATBOOST_AVAILABLE}")
+
+START_TIME = time.time()
+```
+
+------------------------------------------------------------------------
+
+# Feature Engineering
+
+Each engineered feature below maps to a specific pattern observed in the EDA. The rationale for each is documented inline.
+
+## Feature Definitions
+
+```{python}
+#| label: feature-definitions
+
+# ==============================================================================
+# Feature Mappings
+# ==============================================================================
+
+# 1. Intent Strength (Ordinal encoding of Priority)
+# "Webinar" P1 leads convert at lower rates than "Contact Us" P1s.
+# A binary treatment of priority loses this signal.
+
+INTENT_STRENGTH_MAP = {
+    'P1 - Website Pricing': 5,
+    'P1 - Contact Us': 5,
+    'P1 - Video Demo': 3,
+    'P1 - Live Demo': 3,
+    'P1 - Webinar Demo': 1,
+    'No Priority': 1,
+    'Priority 1': 2,
+    'Priority 2': 0
+}
+
+print("Intent Strength Mapping:")
+for k, v in INTENT_STRENGTH_MAP.items():
+    print(f"  {k}: {v}")
+
+# 2. Channel Efficiency (Tiered lead source quality)
+# External Demand Gen converts at ~2.5% while Direct/Inbound converts
+# at 18%+. Treating them equally dilutes the signal.
+
+CHANNEL_TIER_MAP = {
+    'Direct/Inbound': 'Premium',
+    'SEO': 'Premium',
+    'Referrals': 'Premium',
+    'Online Ads': 'Standard',
+    'Directory Listing': 'Standard',
+    'Events': 'Standard',
+    'Outbound Prospecting': 'Standard',
+    'Email': 'Low-Value',
+    'External Demand Gen': 'Low-Value'
+}
+
+CHANNEL_NUMERIC_MAP = {
+    'Premium': 3,
+    'Standard': 2,
+    'Low-Value': 1,
+    'Unknown': 2
+}
+
+print("\nChannel Efficiency Tiers:")
+for channel, tier in CHANNEL_TIER_MAP.items():
+    print(f"  {channel} -> {tier}")
+
+# 3. Capital Density Scoring (Budget proxy)
+# A "Medium" Pharma company has a meaningfully different budget
+# than a "Medium" Consumer Packaged Goods company. Tier size
+# alone is misleading without an industry adjustment.
+
+INDUSTRY_BUDGET_MULTIPLIER = {
+    'Pharma & BioTech': 3.0,
+    'Blood & Biologics': 2.5,
+    'Medical Device': 2.0,
+    'Non-Life Science': 1.0,
+    'Consumer Packaged Goods': 0.8
+}
+
+TIER_SIZE_MAP = {
+    'Small': 50,
+    'Medium': 500,
+    'Large': 5000
+}
+
+print("\nCapital Density Components:")
+print("  Industry Multipliers:", INDUSTRY_BUDGET_MULTIPLIER)
+print("  Tier Size ($ proxy):", TIER_SIZE_MAP)
+
+# 4. Hidden Gem Identification
+# Leads labeled "Not Enough Info Found" or "Non-manufacturing organization"
+# convert at 30-46%. These are likely consultants or small firms that
+# standard firmographic scoring misses.
+
+HIDDEN_GEM_SIGNALS = {
+    'manufacturing_model': ['Not Enough Info Found'],
+    'industry': ['Non-manufacturing organization']
+}
+
+print("\nHidden Gem Signals:")
+print(f"  Manufacturing Model: {HIDDEN_GEM_SIGNALS['manufacturing_model']}")
+print(f"  Industry: {HIDDEN_GEM_SIGNALS['industry']}")
+
+# 5. Role-Product Match
+# A "Quality Manager" looking at Qx (quality product) is a better
+# fit than one looking at Mx (manufacturing product). This alignment
+# tends to shorten the sales cycle.
+
+PRODUCT_ROLE_ALIGNMENT = {
+    'Mx': ['Op', 'Mfg', 'Manuf', 'Production', 'Plant'],
+    'Qx': ['Qual', 'QA', 'QC', 'Compliance', 'Validation']
+}
+
+print("\nRole-Product Alignment:")
+for product, roles in PRODUCT_ROLE_ALIGNMENT.items():
+    print(f"  {product}: {roles}")
+
+# 6. High-Value Title Bigrams
+# Compound phrases like "document control" are more predictive than
+# the individual words. Single-word title parsing misses these.
+
+HIGH_VALUE_BIGRAMS = [
+    'continuous improvement',
+    'document control',
+    'process engineer',
+    'quality systems',
+    'regulatory affairs',
+    'quality assurance',
+    'validation engineer',
+    'compliance manager'
+]
+
+print("\nHigh-Value Title Bigrams:")
+for bigram in HIGH_VALUE_BIGRAMS:
+    print(f"  - '{bigram}'")
+```
+
+## Data Pipeline
+
+```{python}
+#| label: data-pipeline
+
+# ==============================================================================
+# Data Pipeline with Domain-Informed Features
+# ==============================================================================
+
+def clean_and_engineer(filepath):
+    """
+    Load raw CRM data and engineer features based on EDA findings.
+
+    New features:
+    1. intent_strength - Ordinal encoding of priority (5=High, 0=Low)
+    2. channel_efficiency - Tiered lead source (Premium/Standard/Low-Value)
+    3. is_hidden_gem - Flag for high-converting "Unknown" accounts
+    4. capital_density_score - Industry-weighted budget proxy
+    5. role_product_match - Product-title alignment score
+    6. title_bigrams - Flags for high-value compound phrases
+    """
+
+    print("=" * 70)
+    print("Feature Engineering Pipeline")
+    print("=" * 70)
+
+    df = pd.read_csv(filepath)
+    print(f"Loaded: {len(df):,} rows, {len(df.columns)} columns")
+
+    # Standardize column names
+    df.columns = [c.strip().lower().replace(' ', '_').replace('/', '_').replace('-', '_')
+                  for c in df.columns]
+
+    # Target variable
+    if 'is_success' not in df.columns:
+        success_stages = ['SQL', 'SQO', 'Won']
+        df['is_success'] = df['next_stage__c'].isin(success_stages).astype(int)
+
+    print(f"Target Rate: {df['is_success'].mean():.1%}")
+
+    # =========================================================================
+    # Feature 1: Intent Strength
+    # =========================================================================
+    print("\n[1/6] intent_strength")
+
+    if 'priority' in df.columns:
+        df['intent_strength'] = df['priority'].map(INTENT_STRENGTH_MAP).fillna(1)
+
+        intent_conv = df.groupby('intent_strength')['is_success'].agg(['mean', 'count'])
+        print("  Conversion by intent level:")
+        for idx, row in intent_conv.iterrows():
+            print(f"    Level {idx}: {row['mean']:.1%} (n={row['count']:,})")
+    else:
+        df['intent_strength'] = 1
+        print("  [WARNING] 'priority' column not found. Defaulting to 1.")
+
+    # =========================================================================
+    # Feature 2: Channel Efficiency
+    # =========================================================================
+    print("\n[2/6] channel_efficiency")
+
+    channel_col = 'last_tactic_campaign_channel' if 'last_tactic_campaign_channel' in df.columns else 'lead_source'
+
+    if channel_col in df.columns:
+        df['channel_tier'] = df[channel_col].map(CHANNEL_TIER_MAP).fillna('Standard')
+        df['channel_efficiency'] = df['channel_tier'].map(CHANNEL_NUMERIC_MAP)
+
+        tier_conv = df.groupby('channel_tier')['is_success'].agg(['mean', 'count'])
+        print("  Conversion by channel tier:")
+        for tier in ['Premium', 'Standard', 'Low-Value']:
+            if tier in tier_conv.index:
+                row = tier_conv.loc[tier]
+                print(f"    {tier}: {row['mean']:.1%} (n={row['count']:,})")
+    else:
+        df['channel_tier'] = 'Standard'
+        df['channel_efficiency'] = 2
+        print(f"  [WARNING] Channel column not found. Defaulting to Standard.")
+
+    # =========================================================================
+    # Feature 3: Hidden Gem Identification
+    # =========================================================================
+    print("\n[3/6] is_hidden_gem")
+
+    model_col = 'acct_manufacturing_model' if 'acct_manufacturing_model' in df.columns else None
+    industry_col = 'acct_target_industry' if 'acct_target_industry' in df.columns else None
+    site_col = 'acct_primary_site_function' if 'acct_primary_site_function' in df.columns else None
+
+    hidden_gem_mask = pd.Series(False, index=df.index)
+
+    if model_col:
+        hidden_gem_mask |= df[model_col].str.contains('Not Enough Info', case=False, na=False)
+
+    if site_col:
+        hidden_gem_mask |= df[site_col].str.contains('Non-manufacturing', case=False, na=False)
+
+    if industry_col:
+        hidden_gem_mask |= df[industry_col].str.contains('Non-manufacturing', case=False, na=False)
+
+    df['is_hidden_gem'] = hidden_gem_mask.astype(int)
+
+    gem_conv = df.groupby('is_hidden_gem')['is_success'].agg(['mean', 'count'])
+    print("  Conversion by hidden gem status:")
+    for idx, row in gem_conv.iterrows():
+        label = "Hidden Gem" if idx == 1 else "Standard"
+        print(f"    {label}: {row['mean']:.1%} (n={row['count']:,})")
+
+    # =========================================================================
+    # Feature 4: Capital Density Score
+    # =========================================================================
+    print("\n[4/6] capital_density_score")
+
+    tier_col = 'acct_tier_rollup' if 'acct_tier_rollup' in df.columns else None
+
+    if industry_col and tier_col:
+        df['industry_multiplier'] = df[industry_col].map(
+            lambda x: next((v for k, v in INDUSTRY_BUDGET_MULTIPLIER.items()
+                           if k.lower() in str(x).lower()), 1.0)
+        )
+        df['tier_size'] = df[tier_col].map(TIER_SIZE_MAP).fillna(500)
+        df['capital_density_score'] = df['industry_multiplier'] * df['tier_size']
+        df['capital_density_log'] = np.log1p(df['capital_density_score'])
+        df = df.drop(columns=['industry_multiplier', 'tier_size'], errors='ignore')
+
+        print(f"  Range: {df['capital_density_score'].min():.0f} - {df['capital_density_score'].max():.0f}")
+        print(f"  Mean: {df['capital_density_score'].mean():.0f}")
+    else:
+        df['capital_density_score'] = 500
+        df['capital_density_log'] = np.log1p(500)
+        print("  [WARNING] Industry/Tier columns not found. Defaulting to 500.")
+
+    # =========================================================================
+    # Feature 5: Role-Product Match
+    # =========================================================================
+    print("\n[5/6] role_product_match")
+
+    title_col = 'contact_lead_title' if 'contact_lead_title' in df.columns else None
+    product_col = 'product_segment' if 'product_segment' in df.columns else 'solution_rollup'
+
+    if title_col and product_col in df.columns:
+        def check_role_product_match(row):
+            title = str(row[title_col]).lower() if pd.notna(row[title_col]) else ''
+            product = str(row[product_col]) if pd.notna(row[product_col]) else ''
+
+            if product in PRODUCT_ROLE_ALIGNMENT:
+                keywords = PRODUCT_ROLE_ALIGNMENT[product]
+                for kw in keywords:
+                    if kw.lower() in title:
+                        return 1
+            return 0
+
+        df['role_product_match'] = df.apply(check_role_product_match, axis=1)
+
+        match_conv = df.groupby('role_product_match')['is_success'].agg(['mean', 'count'])
+        print("  Conversion by role-product match:")
+        for idx, row in match_conv.iterrows():
+            label = "Matched" if idx == 1 else "Not Matched"
+            print(f"    {label}: {row['mean']:.1%} (n={row['count']:,})")
+    else:
+        df['role_product_match'] = 0
+        print("  [WARNING] Title/Product columns not found. Defaulting to 0.")
+
+    # =========================================================================
+    # Feature 6: Title Bigrams
+    # =========================================================================
+    print("\n[6/6] title_bigrams")
+
+    if title_col and title_col in df.columns:
+        for bigram in HIGH_VALUE_BIGRAMS:
+            col_name = 'has_' + bigram.replace(' ', '_')
+            df[col_name] = df[title_col].str.lower().str.contains(bigram, na=False).astype(int)
+
+        bigram_cols = [c for c in df.columns if c.startswith('has_')]
+        df['title_bigram_count'] = df[bigram_cols].sum(axis=1)
+
+        print(f"  Created {len(bigram_cols)} bigram flags")
+        print(f"  Leads with 1+ bigram: {(df['title_bigram_count'] > 0).sum():,}")
+    else:
+        df['title_bigram_count'] = 0
+        print("  [WARNING] Title column not found. Skipping bigrams.")
+
+    # =========================================================================
+    # Retained Features from Previous Versions
+    # =========================================================================
+    print("\nRetaining base features...")
+
+    # Product segmentation
+    if 'product_segment' not in df.columns:
+        def segment_product(sol):
+            if str(sol) == 'Mx': return 'Mx'
+            elif str(sol) == 'Qx': return 'Qx'
+            return 'Other'
+        df['product_segment'] = df['solution_rollup'].apply(segment_product)
+
+    # Title parsing (Seniority, Function, Scope)
+    if 'title_seniority' not in df.columns and title_col and title_col in df.columns:
+        def parse_seniority(t):
+            if pd.isna(t): return 'Unknown'
+            t = str(t).lower()
+            if re.search(r'\b(ceo|cfo|coo|cto|cio|chief|c-level|president)\b', t): return 'C-Suite'
+            if re.search(r'\b(svp|senior vice president|evp)\b', t): return 'SVP'
+            if re.search(r'\b(vp|vice president)\b', t): return 'VP'
+            if re.search(r'\b(director|head of)\b', t): return 'Director'
+            if re.search(r'\b(manager|mgr|supervisor|lead)\b', t): return 'Manager'
+            if re.search(r'\b(analyst|engineer|specialist|associate|coordinator)\b', t): return 'IC'
+            return 'Other'
+
+        def parse_function(t):
+            if pd.isna(t): return 'Unknown'
+            t = str(t).lower()
+            if re.search(r'\b(quality|qa|qc|qms|compliance|validation|capa)\b', t): return 'Quality'
+            if re.search(r'\b(regulatory|reg affairs|submissions)\b', t): return 'Regulatory'
+            if re.search(r'\b(manufacturing|production|operations|ops|plant|supply)\b', t): return 'Mfg/Ops'
+            if re.search(r'\b(it|information tech|software|systems|data)\b', t): return 'IT'
+            if re.search(r'\b(r&d|research|development|scientist|clinical|lab)\b', t): return 'R&D'
+            if re.search(r'\b(project|program|pmo)\b', t): return 'PMO'
+            return 'Other'
+
+        def parse_scope(t):
+            if pd.isna(t): return 'Standard'
+            t = str(t).lower()
+            if re.search(r'\b(global|worldwide|international|corporate|enterprise)\b', t): return 'Global'
+            if re.search(r'\b(regional|division|group)\b', t): return 'Regional'
+            if re.search(r'\b(site|plant|facility|local)\b', t): return 'Site'
+            return 'Standard'
+
+        df['title_seniority'] = df[title_col].apply(parse_seniority)
+        df['title_function'] = df[title_col].apply(parse_function)
+        df['title_scope'] = df[title_col].apply(parse_scope)
+
+    # Decision maker flag
+    if 'is_decision_maker' not in df.columns:
+        df['is_decision_maker'] = df['title_seniority'].isin(['C-Suite', 'SVP', 'VP', 'Director']).astype(int)
+
+    # Temporal features
+    if 'cohort_date' in df.columns or 'qal_cohort_date' in df.columns:
+        cohort_col = 'qal_cohort_date' if 'qal_cohort_date' in df.columns else 'cohort_date'
+        df['cohort_date'] = pd.to_datetime(df[cohort_col], errors='coerce')
+        if 'lead_age_days' not in df.columns:
+            snapshot_date = df['cohort_date'].max()
+            df['lead_age_days'] = (snapshot_date - df['cohort_date']).dt.days
+
+    # Velocity tiers
+    if 'lead_age_days' in df.columns:
+        df['velocity_tier'] = pd.cut(
+            df['lead_age_days'].fillna(0),
+            bins=[-1, 30, 60, 90, 180, 9999],
+            labels=['Hot', 'Warm', 'Cooling', 'Cold', 'Stale']
+        ).astype(str)
+        df['is_fresh'] = (df['lead_age_days'] <= 30).astype(int)
+        df['is_stale'] = (df['lead_age_days'] > 180).astype(int)
+
+    # Interaction features
+    seniority_col = 'title_seniority' if 'title_seniority' in df.columns else None
+    industry_col = 'acct_target_industry' if 'acct_target_industry' in df.columns else None
+    model_col = 'acct_manufacturing_model' if 'acct_manufacturing_model' in df.columns else None
+
+    if seniority_col and industry_col and model_col:
+        df['seniority_x_industry'] = df[seniority_col].astype(str) + '_' + df[industry_col].astype(str)
+        df['seniority_x_model'] = df[seniority_col].astype(str) + '_' + df[model_col].astype(str)
+        df['industry_x_model'] = df[industry_col].astype(str) + '_' + df[model_col].astype(str)
+        df['power_trio'] = (df[seniority_col].astype(str) + '_' +
+                           df[industry_col].astype(str) + '_' +
+                           df[model_col].astype(str))
+
+    # High-value segment flags
+    if seniority_col and industry_col and model_col:
+        senior_mask = df[seniority_col].isin(['Director', 'VP', 'SVP', 'C-Suite'])
+        pharma_mask = df[industry_col].str.contains('Pharma|Life|Bio', case=False, na=False)
+        inhouse_mask = df[model_col].str.contains('In-House|In House|Inhouse', case=False, na=False)
+        df['is_golden_segment'] = (senior_mask & pharma_mask & inhouse_mask).astype(int)
+        df['is_senior_pharma'] = (senior_mask & pharma_mask).astype(int)
+
+    if 'title_scope' in df.columns:
+        df['is_global_scope'] = (df['title_scope'] == 'Global').astype(int)
+
+    # Fill missing categoricals
+    categorical_cols = ['acct_manufacturing_model', 'acct_primary_site_function',
+                        'acct_target_industry', 'acct_territory_rollup',
+                        'title_seniority', 'title_function', 'title_scope',
+                        'channel_tier']
+
+    for col in categorical_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna('Unknown')
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("Feature engineering complete")
+    print("=" * 70)
+
+    new_features = ['intent_strength', 'channel_efficiency', 'is_hidden_gem',
+                    'capital_density_score', 'capital_density_log',
+                    'role_product_match', 'title_bigram_count']
+    new_features = [f for f in new_features if f in df.columns]
+
+    print(f"Domain-informed features: {new_features}")
+    print(f"Total columns: {len(df.columns)}")
+
+    return df
+
+df = clean_and_engineer(DATA_PATH)
+```
+
+## Feature Correlation with Target
+
+This checks whether the engineered features actually correlate with conversion before putting them into a model.
+
+```{python}
+#| label: feature-correlation
+
+# ==============================================================================
+# Feature Correlation with Target
+# ==============================================================================
+
+print("Feature correlation with is_success:")
+print("-" * 40)
+
+numeric_features = [
+    'intent_strength', 'channel_efficiency', 'is_hidden_gem',
+    'capital_density_log', 'role_product_match', 'title_bigram_count',
+    'is_golden_segment', 'is_decision_maker', 'is_fresh', 'is_stale',
+    'is_global_scope', 'lead_age_days'
+]
+
+numeric_features = [f for f in numeric_features if f in df.columns]
+
+correlations = df[numeric_features + ['is_success']].corr()['is_success'].drop('is_success')
+correlations = correlations.sort_values(ascending=False)
+
+for feat, corr in correlations.items():
+    direction = "+" if corr > 0 else "-"
+    print(f"  {feat:30s}: {direction}{abs(corr):.4f}")
+
+# Visualization
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+ax1 = axes[0]
+colors = [PROJECT_COLS['Success'] if c > 0 else PROJECT_COLS['Failure'] for c in correlations.values]
+correlations.plot(kind='barh', ax=ax1, color=colors)
+ax1.axvline(x=0, color='black', linewidth=1)
+ax1.set_xlabel('Correlation with is_success')
+ax1.set_title('Feature Correlations with Target', fontweight='bold')
+
+ax2 = axes[1]
+channel_conv = df.groupby('channel_tier')['is_success'].mean().reindex(['Premium', 'Standard', 'Low-Value'])
+tier_colors = [PROJECT_COLS['Premium'], PROJECT_COLS['Neutral'], PROJECT_COLS['Toxic']]
+channel_conv.plot(kind='bar', ax=ax2, color=tier_colors, edgecolor='black')
+ax2.set_ylabel('Conversion Rate')
+ax2.set_xlabel('Channel Tier')
+ax2.set_title('Conversion by Channel Tier', fontweight='bold')
+ax2.set_xticklabels(ax2.get_xticklabels(), rotation=0)
+
+for i, v in enumerate(channel_conv):
+    ax2.text(i, v + 0.005, f'{v:.1%}', ha='center', fontweight='bold')
+
+plt.tight_layout()
+plt.show()
+
+if 'channel_tier' in df.columns:
+    premium_rate = df[df['channel_tier'] == 'Premium']['is_success'].mean()
+    low_value_rate = df[df['channel_tier'] == 'Low-Value']['is_success'].mean()
+    print(f"\nPremium channel conversion: {premium_rate:.1%}")
+    print(f"Low-value channel conversion: {low_value_rate:.1%}")
+    print(f"Lift (Premium vs Low-Value): {premium_rate/low_value_rate:.1f}x")
+
+if 'is_hidden_gem' in df.columns:
+    gem_rate = df[df['is_hidden_gem'] == 1]['is_success'].mean()
+    baseline_rate = df['is_success'].mean()
+    print(f"\nHidden gem conversion: {gem_rate:.1%}")
+    print(f"Baseline conversion: {baseline_rate:.1%}")
+    print(f"Hidden gem lift: {gem_rate/baseline_rate:.1f}x")
+```
+
+## Feature Matrix Preparation
+
+```{python}
+#| label: feature-matrix
+
+# ==============================================================================
+# Feature Matrix Construction
+# ==============================================================================
+
+def prepare_feature_matrix(df):
+    """Assemble the feature matrix for modeling."""
+
+    print("Preparing feature matrix...")
+
+    y = df['is_success'].values
+
+    # Categorical features
+    categorical_features = [
+        'title_seniority', 'title_function', 'title_scope',
+        'acct_target_industry', 'acct_manufacturing_model',
+        'acct_primary_site_function', 'acct_territory_rollup',
+        'product_segment', 'channel_tier'
+    ]
+
+    interaction_features = [
+        'seniority_x_industry', 'seniority_x_model', 'industry_x_model',
+        'power_trio'
+    ]
+
+    velocity_cats = ['velocity_tier']
+
+    categorical_features = [c for c in categorical_features if c in df.columns]
+    interaction_features = [c for c in interaction_features if c in df.columns]
+    velocity_cats = [c for c in velocity_cats if c in df.columns]
+
+    all_categoricals = categorical_features + interaction_features + velocity_cats
+
+    # Numeric features
+    numeric_features = [
+        'lead_age_days', 'is_decision_maker', 'is_fresh', 'is_stale',
+        'is_golden_segment', 'is_senior_pharma', 'is_global_scope',
+        'intent_strength', 'channel_efficiency', 'is_hidden_gem',
+        'capital_density_log', 'role_product_match', 'title_bigram_count'
+    ]
+
+    bigram_cols = [c for c in df.columns if c.startswith('has_')]
+    numeric_features.extend(bigram_cols)
+
+    if 'record_completeness' in df.columns:
+        numeric_features.append('record_completeness')
+
+    numeric_features = [c for c in numeric_features if c in df.columns]
+
+    text_col = 'contact_lead_title' if 'contact_lead_title' in df.columns else None
+
+    X = df[all_categoricals + numeric_features].copy()
+    text_data = df[text_col].fillna('') if text_col else None
+
+    print(f"  Categorical features: {len(all_categoricals)}")
+    print(f"  Numeric features: {len(numeric_features)}")
+    print(f"  Text feature: {text_col}")
+
+    return X, y, text_data, all_categoricals, numeric_features
+
+X, y, text_data, cat_cols, num_cols = prepare_feature_matrix(df)
+```
+
+## Train/Validation/Test Split and Encoding
+
+```{python}
+#| label: data-split
+
+# ==============================================================================
+# Data Splitting and Encoding
+# ==============================================================================
+
+print("Splitting data...")
+
+# Stratified split
+X_temp, X_test, y_temp, y_test = train_test_split(
+    X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+)
+
+X_train, X_val, y_train, y_val = train_test_split(
+    X_temp, y_temp, test_size=VAL_SIZE/(1-TEST_SIZE), random_state=RANDOM_STATE, stratify=y_temp
+)
+
+# Split text data
+if text_data is not None:
+    text_temp, text_test = train_test_split(
+        text_data, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+    )
+    text_train, text_val = train_test_split(
+        text_temp, test_size=VAL_SIZE/(1-TEST_SIZE), random_state=RANDOM_STATE, stratify=y_temp
+    )
+else:
+    text_train = text_val = text_test = None
+
+print(f"Train: {len(X_train):,} ({y_train.mean():.1%} positive)")
+print(f"Val:   {len(X_val):,} ({y_val.mean():.1%} positive)")
+print(f"Test:  {len(X_test):,} ({y_test.mean():.1%} positive)")
+
+# ==============================================================================
+# Target Encoding
+# ==============================================================================
+
+print("\nApplying target encoding to high-cardinality features...")
+
+target_encode_cols = [c for c in cat_cols if X_train[c].nunique() > 10]
+standard_encode_cols = [c for c in cat_cols if c not in target_encode_cols]
+
+print(f"  Target-encoded ({len(target_encode_cols)}): {target_encode_cols}")
+print(f"  Label-encoded ({len(standard_encode_cols)}): {standard_encode_cols}")
+
+# Manual Target Encoder (fallback)
+class ManualTargetEncoder(BaseEstimator, TransformerMixin):
+    def __init__(self, columns=None, smoothing=10):
+        self.columns = columns
+        self.smoothing = smoothing
+        self.encoding_maps_ = {}
+        self.global_mean_ = None
+
+    def fit(self, X, y):
+        X = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X
+        y = np.array(y)
+        self.global_mean_ = y.mean()
+        cols_to_encode = self.columns if self.columns else X.select_dtypes(include=['object', 'category']).columns.tolist()
+        for col in cols_to_encode:
+            if col in X.columns:
+                df_temp = pd.DataFrame({'col': X[col].astype(str), 'target': y})
+                agg = df_temp.groupby('col')['target'].agg(['mean', 'count'])
+                smoothed = (agg['count'] * agg['mean'] + self.smoothing * self.global_mean_) / (agg['count'] + self.smoothing)
+                self.encoding_maps_[col] = smoothed.to_dict()
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy() if not isinstance(X, pd.DataFrame) else X.copy()
+        for col, mapping in self.encoding_maps_.items():
+            if col in X.columns:
+                X[col + '_encoded'] = X[col].astype(str).map(mapping).fillna(self.global_mean_)
+        return X
+
+# Apply Target Encoding
+if TARGET_ENCODER_AVAILABLE and len(target_encode_cols) > 0:
+    target_encoder = TargetEncoder(smooth='auto', target_type='binary')
+
+    X_train_te = X_train.copy()
+    X_val_te = X_val.copy()
+    X_test_te = X_test.copy()
+
+    te_train = target_encoder.fit_transform(X_train[target_encode_cols], y_train)
+    te_val = target_encoder.transform(X_val[target_encode_cols])
+    te_test = target_encoder.transform(X_test[target_encode_cols])
+
+    for i, col in enumerate(target_encode_cols):
+        X_train_te[col] = te_train[:, i]
+        X_val_te[col] = te_val[:, i]
+        X_test_te[col] = te_test[:, i]
+
+elif len(target_encode_cols) > 0:
+    manual_encoder = ManualTargetEncoder(columns=target_encode_cols, smoothing=10)
+
+    X_train_te = manual_encoder.fit_transform(X_train, y_train)
+    X_val_te = manual_encoder.transform(X_val)
+    X_test_te = manual_encoder.transform(X_test)
+
+    for col in target_encode_cols:
+        if col + '_encoded' in X_train_te.columns:
+            X_train_te[col] = X_train_te[col + '_encoded']
+            X_val_te[col] = X_val_te[col + '_encoded']
+            X_test_te[col] = X_test_te[col + '_encoded']
+else:
+    X_train_te = X_train.copy()
+    X_val_te = X_val.copy()
+    X_test_te = X_test.copy()
+
+# ==============================================================================
+# Label Encoding
+# ==============================================================================
+
+label_encoders = {}
+for col in standard_encode_cols:
+    le = LabelEncoder()
+    X_train_te[col] = le.fit_transform(X_train_te[col].astype(str))
+
+    def safe_transform(series, encoder):
+        return series.astype(str).apply(
+            lambda x: encoder.transform([x])[0] if x in encoder.classes_ else 0
+        )
+
+    X_val_te[col] = safe_transform(X_val_te[col], le)
+    X_test_te[col] = safe_transform(X_test_te[col], le)
+    label_encoders[col] = le
+
+# ==============================================================================
+# LSA for Title Text
+# ==============================================================================
+
+if text_train is not None:
+    print(f"\nApplying LSA ({LSA_COMPONENTS} components) to title text...")
+
+    tfidf = TfidfVectorizer(
+        max_features=TFIDF_MAX_FEATURES,
+        ngram_range=(1, 2),
+        stop_words='english',
+        min_df=5
+    )
+
+    tfidf_train = tfidf.fit_transform(text_train)
+    tfidf_val = tfidf.transform(text_val)
+    tfidf_test = tfidf.transform(text_test)
+
+    svd = TruncatedSVD(n_components=LSA_COMPONENTS, random_state=RANDOM_STATE)
+
+    lsa_train = svd.fit_transform(tfidf_train)
+    lsa_val = svd.transform(tfidf_val)
+    lsa_test = svd.transform(tfidf_test)
+
+    print(f"  Explained variance: {svd.explained_variance_ratio_.sum():.1%}")
+
+    lsa_cols = [f'lsa_{i}' for i in range(LSA_COMPONENTS)]
+
+    for i, col in enumerate(lsa_cols):
+        X_train_te[col] = lsa_train[:, i]
+        X_val_te[col] = lsa_val[:, i]
+        X_test_te[col] = lsa_test[:, i]
+
+# ==============================================================================
+# Final Numeric Conversion
+# ==============================================================================
+
+for col in X_train_te.columns:
+    if X_train_te[col].dtype == 'object':
+        le = LabelEncoder()
+        X_train_te[col] = le.fit_transform(X_train_te[col].astype(str))
+
+        def safe_encode(series, encoder):
+            return series.astype(str).apply(
+                lambda x: encoder.transform([x])[0] if x in encoder.classes_ else 0
+            )
+
+        X_val_te[col] = safe_encode(X_val_te[col], le)
+        X_test_te[col] = safe_encode(X_test_te[col], le)
+
+X_train_te = X_train_te.fillna(0)
+X_val_te = X_val_te.fillna(0)
+X_test_te = X_test_te.fillna(0)
+
+print(f"\nFinal feature matrix shape: {X_train_te.shape}")
+print(f"Features: {list(X_train_te.columns)}")
+```
+
+------------------------------------------------------------------------
+
+# Model Selection
+
+Five candidate models are tuned via randomized search with 5-fold stratified cross-validation (50 iterations each), then compared on a held-out validation set. The top three base learners are combined in a stacking ensemble with a logistic regression meta-learner.
+
+## Base Model Definitions
+
+```{python}
+#| label: model-definitions
+
+# ==============================================================================
+# Model Definitions
+# ==============================================================================
+
+print("Configuring candidate models...")
+
+models = {}
+param_grids = {}
+
+pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+print(f"Class imbalance ratio: {pos_weight:.2f}")
+
+if CATBOOST_AVAILABLE:
+    models['CatBoost'] = SklearnCatBoost(
+        random_state=RANDOM_STATE,
+        verbose=0,
+        thread_count=1
+    )
+    param_grids['CatBoost'] = {
+        'depth': [4, 6, 8, 10],
+        'learning_rate': [0.01, 0.03, 0.05, 0.1],
+        'iterations': [300, 500, 800],
+        'l2_leaf_reg': [1, 3, 5, 7],
+        'border_count': [32, 64, 128]
+    }
+    print("  CatBoost: configured (sklearn-compatible wrapper)")
+
+if XGBOOST_AVAILABLE:
+    models['XGBoost'] = XGBClassifier(
+        random_state=RANDOM_STATE,
+        n_jobs=1,
+        eval_metric='logloss'
+    )
+    param_grids['XGBoost'] = {
+        'max_depth': [4, 6, 8, 10],
+        'learning_rate': [0.01, 0.03, 0.05, 0.1],
+        'n_estimators': [300, 500, 800],
+        'scale_pos_weight': [1, pos_weight],
+        'subsample': [0.7, 0.8, 0.9, 1.0],
+        'colsample_bytree': [0.7, 0.8, 0.9, 1.0],
+        'reg_alpha': [0, 0.1, 0.5],
+        'reg_lambda': [1, 2, 5]
+    }
+    print("  XGBoost: configured")
+
+if LIGHTGBM_AVAILABLE:
+    models['LightGBM'] = LGBMClassifier(
+        random_state=RANDOM_STATE,
+        n_jobs=1,
+        verbose=-1
+    )
+    param_grids['LightGBM'] = {
+        'num_leaves': [31, 63, 127, 255],
+        'learning_rate': [0.01, 0.03, 0.05, 0.1],
+        'n_estimators': [300, 500, 800],
+        'class_weight': ['balanced', None],
+        'subsample': [0.7, 0.8, 0.9, 1.0],
+        'colsample_bytree': [0.7, 0.8, 0.9, 1.0],
+        'reg_alpha': [0, 0.1, 0.5],
+        'reg_lambda': [1, 2, 5]
+    }
+    print("  LightGBM: configured")
+
+models['GradientBoosting'] = GradientBoostingClassifier(
+    random_state=RANDOM_STATE
+)
+param_grids['GradientBoosting'] = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [4, 6, 8],
+    'learning_rate': [0.05, 0.1, 0.2],
+    'subsample': [0.8, 0.9, 1.0]
+}
+print("  GradientBoosting: configured (fallback)")
+
+models['RandomForest'] = RandomForestClassifier(
+    random_state=RANDOM_STATE,
+    n_jobs=1,
+    class_weight='balanced'
+)
+param_grids['RandomForest'] = {
+    'n_estimators': [100, 200, 300],
+    'max_depth': [10, 15, 20, None],
+    'min_samples_split': [2, 5, 10],
+    'min_samples_leaf': [1, 2, 4]
+}
+print("  RandomForest: configured (balanced class weights)")
+
+print(f"\nTotal models: {len(models)}")
+print(f"Search iterations per model: {N_ITER_SEARCH}")
+print(f"CV folds: {CV_FOLDS}")
+```
+
+## Hyperparameter Search
+
+```{python}
+#| label: hyperparameter-search
+
+# ==============================================================================
+# Randomized Search (n_iter=50, cv=5)
+# ==============================================================================
+
+print("Running hyperparameter search...")
+
+cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+
+best_models = {}
+cv_results = {}
+
+for name, model in models.items():
+    print(f"\n{'='*50}")
+    print(f"Tuning: {name}")
+    print(f"{'='*50}")
+
+    search = RandomizedSearchCV(
+        estimator=model,
+        param_distributions=param_grids[name],
+        n_iter=N_ITER_SEARCH,
+        cv=cv,
+        scoring='roc_auc',
+        n_jobs=N_JOBS,
+        random_state=RANDOM_STATE,
+        verbose=1
+    )
+
+    search.fit(X_train_te, y_train)
+
+    best_models[name] = search.best_estimator_
+    cv_results[name] = {
+        'best_score': search.best_score_,
+        'best_params': search.best_params_,
+        'cv_results': search.cv_results_
+    }
+
+    print(f"Best CV AUC: {search.best_score_:.4f}")
+    print(f"Best params: {search.best_params_}")
+
+# ==============================================================================
+# Validation Set Evaluation
+# ==============================================================================
+
+print("\nValidation set performance:")
+
+val_results = {}
+for name, model in best_models.items():
+    probs = model.predict_proba(X_val_te)[:, 1]
+    auc = roc_auc_score(y_val, probs)
+    val_results[name] = {'auc': auc, 'probs': probs}
+    print(f"  {name}: AUC = {auc:.4f}")
+
+val_ranking = sorted(val_results.items(), key=lambda x: x[1]['auc'], reverse=True)
+print(f"\nRanking:")
+for i, (name, res) in enumerate(val_ranking, 1):
+    print(f"  {i}. {name}: {res['auc']:.4f}")
+
+tournament_df = pd.DataFrame([
+    {'Model': name, 'CV AUC': f"{cv_results[name]['best_score']:.4f}",
+     'Val AUC': f"{val_results[name]['auc']:.4f}"}
+    for name in best_models.keys()
+]).sort_values('Val AUC', ascending=False)
+print("\n" + tournament_df.to_markdown(index=False))
+```
+
+## Stacking Ensemble
+
+```{python}
+#| label: stacking-ensemble
+
+# ==============================================================================
+# Stacking Ensemble
+# ==============================================================================
+
+print("Building stacking ensemble...")
+
+top_3_names = [name for name, _ in val_ranking[:3]]
+print(f"Base learners: {top_3_names}")
+
+stacking_estimators = [(name, best_models[name]) for name in top_3_names]
+
+meta_learner = LogisticRegression(
+    random_state=RANDOM_STATE,
+    max_iter=1000,
+    class_weight='balanced'
+)
+
+stacking_clf = StackingClassifier(
+    estimators=stacking_estimators,
+    final_estimator=meta_learner,
+    cv=CV_FOLDS,
+    stack_method='predict_proba',
+    n_jobs=N_JOBS,
+    passthrough=False
+)
+
+print("Training stacking ensemble...")
+stacking_clf.fit(X_train_te, y_train)
+
+stack_val_probs = stacking_clf.predict_proba(X_val_te)[:, 1]
+stack_val_auc = roc_auc_score(y_val, stack_val_probs)
+
+print(f"\nStacking ensemble validation AUC: {stack_val_auc:.4f}")
+
+best_individual_auc = val_ranking[0][1]['auc']
+improvement = stack_val_auc - best_individual_auc
+print(f"Improvement over best individual ({val_ranking[0][0]}): {improvement:+.4f}")
+
+best_models['StackingEnsemble'] = stacking_clf
+val_results['StackingEnsemble'] = {'auc': stack_val_auc, 'probs': stack_val_probs}
+```
+
+## Test Set Evaluation
+
+```{python}
+#| label: final-evaluation
+
+# ==============================================================================
+# Final Test Set Evaluation
+# ==============================================================================
+
+champion_name = max(val_results.items(), key=lambda x: x[1]['auc'])[0]
+champion_model = best_models[champion_name]
+
+print(f"Best model: {champion_name}")
+
+test_probs = champion_model.predict_proba(X_test_te)[:, 1]
+test_preds = (test_probs >= 0.5).astype(int)
+
+test_auc = roc_auc_score(y_test, test_probs)
+test_ap = average_precision_score(y_test, test_probs)
+test_brier = brier_score_loss(y_test, test_probs)
+test_logloss = log_loss(y_test, test_probs)
+
+print(f"\nTest set metrics:")
+print(f"  AUC-ROC:        {test_auc:.4f}")
+print(f"  Average Prec:   {test_ap:.4f}")
+print(f"  Brier Score:    {test_brier:.4f}")
+print(f"  Log Loss:       {test_logloss:.4f}")
+
+print(f"\nClassification report (threshold=0.5):")
+print(classification_report(y_test, test_preds, target_names=['Not SQL', 'SQL']))
+
+cm = confusion_matrix(y_test, test_preds)
+print(f"Confusion matrix:")
+print(cm)
+
+FINAL_AUC = test_auc
+CHAMPION_MODEL = champion_model
+CHAMPION_NAME = champion_name
+
+if FINAL_AUC >= 0.90:
+    print(f"\nAUC target of 0.90 achieved: {FINAL_AUC:.4f}")
+else:
+    print(f"\nAUC: {FINAL_AUC:.4f} (target: 0.90, gap: {0.90 - FINAL_AUC:.4f})")
+```
+
+------------------------------------------------------------------------
+
+# Profit Analysis
+
+With a $50 cost per call and $6,000 value per SQL, this section calculates the scoring threshold that maximizes expected profit. It also quantifies the cost of continuing to work low-value channel leads.
+
+```{python}
+#| label: profit-optimization
+
+# ==============================================================================
+# Profit Curve
+# ==============================================================================
+
+def calculate_profit_curve(y_true, y_probs, cost_per_call=COST_PER_CALL, value_per_sql=VALUE_PER_SQL):
+    """Calculate profit at various scoring thresholds."""
+    order = np.argsort(y_probs)[::-1]
+    y_sorted = y_true[order]
+    probs_sorted = y_probs[order]
+
+    n_total = len(y_true)
+    results = []
+    cumsum_success = np.cumsum(y_sorted)
+
+    for k in range(1, n_total + 1):
+        threshold = probs_sorted[k-1]
+        n_calls = k
+        n_sqls = cumsum_success[k-1]
+
+        revenue = n_sqls * value_per_sql
+        cost = n_calls * cost_per_call
+        profit = revenue - cost
+
+        pct_population = k / n_total
+        pct_sqls_captured = n_sqls / y_true.sum() if y_true.sum() > 0 else 0
+        lift = (n_sqls / k) / (y_true.sum() / n_total) if k > 0 else 0
+
+        results.append({
+            'threshold': threshold,
+            'n_calls': n_calls,
+            'n_sqls': n_sqls,
+            'revenue': revenue,
+            'cost': cost,
+            'profit': profit,
+            'pct_population': pct_population,
+            'pct_sqls_captured': pct_sqls_captured,
+            'lift': lift
+        })
+
+    return pd.DataFrame(results)
+
+profit_df = calculate_profit_curve(y_test, test_probs)
+
+optimal_idx = profit_df['profit'].idxmax()
+optimal_row = profit_df.iloc[optimal_idx]
+
+OPTIMAL_THRESHOLD = optimal_row['threshold']
+MAX_PROFIT = optimal_row['profit']
+OPTIMAL_CALLS = optimal_row['n_calls']
+OPTIMAL_SQLS = optimal_row['n_sqls']
+OPTIMAL_PCT_POP = optimal_row['pct_population']
+OPTIMAL_PCT_CAPTURE = optimal_row['pct_sqls_captured']
+
+print(f"Optimal profit configuration:")
+print(f"  Threshold:       {OPTIMAL_THRESHOLD:.3f}")
+print(f"  Max Profit:      ${MAX_PROFIT:,.0f}")
+print(f"  Calls Required:  {OPTIMAL_CALLS:,} ({OPTIMAL_PCT_POP:.1%} of population)")
+print(f"  SQLs Captured:   {OPTIMAL_SQLS:,} ({OPTIMAL_PCT_CAPTURE:.1%} of all SQLs)")
+print(f"  Lift:            {OPTIMAL_PCT_CAPTURE/OPTIMAL_PCT_POP:.1f}x over random")
+
+# ==============================================================================
+# Low-Value Channel Waste Analysis
+# ==============================================================================
+
+print("\nLow-value channel waste analysis:")
+
+if 'channel_tier' in df.columns:
+    test_indices = X_test.index
+    test_df = df.loc[test_indices].copy()
+    test_df['test_prob'] = test_probs
+    test_df['test_actual'] = y_test
+
+    channel_analysis = test_df.groupby('channel_tier').agg({
+        'test_actual': ['sum', 'count', 'mean'],
+        'test_prob': 'mean'
+    }).round(3)
+    channel_analysis.columns = ['SQLs', 'Total', 'Conv_Rate', 'Avg_Score']
+
+    print("\nChannel tier performance (test set):")
+    print(channel_analysis.to_string())
+
+    low_value_df = test_df[test_df['channel_tier'] == 'Low-Value']
+    if len(low_value_df) > 0:
+        lv_calls = len(low_value_df)
+        lv_sqls = low_value_df['test_actual'].sum()
+        lv_cost = lv_calls * COST_PER_CALL
+        lv_revenue = lv_sqls * VALUE_PER_SQL
+        lv_profit = lv_revenue - lv_cost
+
+        print(f"\nLow-value channel breakdown:")
+        print(f"  Calls: {lv_calls:,}")
+        print(f"  SQLs: {lv_sqls:,}")
+        print(f"  Cost: ${lv_cost:,.0f}")
+        print(f"  Revenue: ${lv_revenue:,.0f}")
+        print(f"  Net: ${lv_profit:,.0f}")
+
+        waste_reduction = lv_cost - (lv_sqls * VALUE_PER_SQL)
+        print(f"\n  Savings from deprioritizing low-value channels: ${waste_reduction:,.0f}")
+```
+
+```{python}
+#| label: profit-visualization
+
+# ==============================================================================
+# Profit Visualization
+# ==============================================================================
+
+business_impact_df = pd.DataFrame({
+    'Metric': ['Optimal Threshold', 'Leads to Contact', 'SQLs Captured',
+               'Contact %', 'Capture %', 'Total Cost', 'Total Revenue', 'Net Profit'],
+    'Value': [f'{OPTIMAL_THRESHOLD:.3f}', f'{OPTIMAL_CALLS:,}', f'{OPTIMAL_SQLS:,}',
+              f'{OPTIMAL_PCT_POP:.1%}', f'{OPTIMAL_PCT_CAPTURE:.1%}',
+              f'${OPTIMAL_CALLS * COST_PER_CALL:,.0f}', f'${OPTIMAL_SQLS * VALUE_PER_SQL:,.0f}',
+              f'${MAX_PROFIT:,.0f}']
+})
+print(business_impact_df.to_markdown(index=False))
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+# Profit curve
+ax1 = axes[0, 0]
+ax1.plot(profit_df['pct_population'] * 100, profit_df['profit'] / 1000,
+         color=PROJECT_COLS['Profit'], linewidth=2)
+ax1.axvline(x=OPTIMAL_PCT_POP * 100, color=PROJECT_COLS['Gold'], linestyle='--',
+            label=f'Optimal: {OPTIMAL_PCT_POP:.1%}')
+ax1.scatter([OPTIMAL_PCT_POP * 100], [MAX_PROFIT / 1000],
+            color=PROJECT_COLS['Gold'], s=100, zorder=5, marker='*')
+ax1.fill_between(profit_df['pct_population'] * 100, 0, profit_df['profit'] / 1000,
+                 alpha=0.3, color=PROJECT_COLS['Profit'])
+ax1.set_xlabel('% of Leads Contacted', fontsize=11)
+ax1.set_ylabel('Profit ($K)', fontsize=11)
+ax1.set_title('Profit Curve', fontweight='bold')
+ax1.legend()
+ax1.set_xlim(0, 100)
+
+# Cumulative gains
+ax2 = axes[0, 1]
+ax2.plot(profit_df['pct_population'] * 100, profit_df['pct_sqls_captured'] * 100,
+         color=PROJECT_COLS['Success'], linewidth=2, label='Model')
+ax2.plot([0, 100], [0, 100], 'k--', alpha=0.5, label='Random')
+ax2.axhline(y=90, color=PROJECT_COLS['Gold'], linestyle=':', alpha=0.7, label='90% Capture')
+ax2.fill_between(profit_df['pct_population'] * 100,
+                 profit_df['pct_population'] * 100,
+                 profit_df['pct_sqls_captured'] * 100,
+                 alpha=0.3, color=PROJECT_COLS['Success'])
+ax2.set_xlabel('% of Leads Contacted', fontsize=11)
+ax2.set_ylabel('% of SQLs Captured', fontsize=11)
+ax2.set_title('Cumulative Gains', fontweight='bold')
+ax2.legend(loc='lower right')
+ax2.set_xlim(0, 100)
+ax2.set_ylim(0, 100)
+
+# Lift chart
+ax3 = axes[1, 0]
+ax3.plot(profit_df['pct_population'] * 100, profit_df['lift'],
+         color=PROJECT_COLS['Highlight'], linewidth=2)
+ax3.axhline(y=1, color='gray', linestyle='--', alpha=0.5, label='Baseline (1.0x)')
+ax3.fill_between(profit_df['pct_population'] * 100, 1, profit_df['lift'],
+                 where=profit_df['lift'] > 1, alpha=0.3, color=PROJECT_COLS['Success'])
+ax3.set_xlabel('% of Leads Contacted', fontsize=11)
+ax3.set_ylabel('Lift (vs Random)', fontsize=11)
+ax3.set_title('Lift Chart', fontweight='bold')
+ax3.legend()
+ax3.set_xlim(0, 100)
+
+# Profit by decile
+ax4 = axes[1, 1]
+decile_profits = []
+for i in range(10):
+    start_pct = i * 0.1
+    end_pct = (i + 1) * 0.1
+    mask = (profit_df['pct_population'] > start_pct) & (profit_df['pct_population'] <= end_pct)
+    if mask.any():
+        decile_row = profit_df[mask].iloc[-1]
+        if i == 0:
+            decile_profit = decile_row['profit']
+        else:
+            prev_row = profit_df[profit_df['pct_population'] <= start_pct].iloc[-1]
+            decile_profit = decile_row['profit'] - prev_row['profit']
+        decile_profits.append(decile_profit / 1000)
+    else:
+        decile_profits.append(0)
+
+colors = [PROJECT_COLS['Success'] if p > 0 else PROJECT_COLS['Failure'] for p in decile_profits]
+ax4.bar(range(1, 11), decile_profits, color=colors, edgecolor='white')
+ax4.axhline(y=0, color='black', linewidth=1)
+ax4.set_xlabel('Decile (1 = Highest Score)', fontsize=11)
+ax4.set_ylabel('Incremental Profit ($K)', fontsize=11)
+ax4.set_title('Profit by Decile', fontweight='bold')
+ax4.set_xticks(range(1, 11))
+
+plt.tight_layout()
+plt.show()
+
+print(f"\nBy prioritizing leads with score > {OPTIMAL_THRESHOLD:.2f},")
+print(f"{OPTIMAL_PCT_CAPTURE:.0%} of SQLs are captured with {OPTIMAL_PCT_POP:.0%} of calls.")
+print(f"Maximum profit: ${MAX_PROFIT:,.0f}")
+```
+
+------------------------------------------------------------------------
+
+# Model Performance Dashboard
+
+Four panels summarizing discriminative power, precision-recall tradeoff, profit optimization, and channel tier conversion.
+
+```{python}
+#| label: executive-dashboard
+
+# ==============================================================================
+# Performance Dashboard
+# ==============================================================================
+
+dashboard_metrics = pd.DataFrame({
+    'Metric': ['AUC-ROC', 'Average Precision', 'Brier Score', 'Log Loss',
+               'Optimal Threshold', 'Max Profit'],
+    'Value': [f'{test_auc:.4f}', f'{test_ap:.4f}', f'{test_brier:.4f}', f'{test_logloss:.4f}',
+              f'{OPTIMAL_THRESHOLD:.3f}', f'${MAX_PROFIT:,.0f}']
+})
+print(dashboard_metrics.to_markdown(index=False))
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+# ROC Curve
+ax1 = axes[0, 0]
+fpr, tpr, thresholds = roc_curve(y_test, test_probs)
+ax1.plot(fpr, tpr, color=PROJECT_COLS['Success'], linewidth=2,
+         label=f'{CHAMPION_NAME} (AUC = {FINAL_AUC:.3f})')
+ax1.plot([0, 1], [0, 1], 'k--', alpha=0.5, label='Random (AUC = 0.500)')
+ax1.fill_between(fpr, 0, tpr, alpha=0.3, color=PROJECT_COLS['Success'])
+
+optimal_idx_roc = np.argmin(np.abs(thresholds - OPTIMAL_THRESHOLD))
+ax1.scatter([fpr[optimal_idx_roc]], [tpr[optimal_idx_roc]],
+            color=PROJECT_COLS['Gold'], s=150, marker='*', zorder=5,
+            label=f'Profit-Optimal (t={OPTIMAL_THRESHOLD:.2f})')
+
+ax1.set_xlabel('False Positive Rate', fontsize=11)
+ax1.set_ylabel('True Positive Rate', fontsize=11)
+ax1.set_title('ROC Curve', fontweight='bold')
+ax1.legend(loc='lower right')
+ax1.set_xlim(-0.02, 1.02)
+ax1.set_ylim(-0.02, 1.02)
+
+# Precision-Recall
+ax2 = axes[0, 1]
+precision, recall, pr_thresholds = precision_recall_curve(y_test, test_probs)
+ap = average_precision_score(y_test, test_probs)
+
+ax2.plot(recall, precision, color=PROJECT_COLS['Highlight'], linewidth=2,
+         label=f'Model (AP = {ap:.3f})')
+ax2.axhline(y=y_test.mean(), color='gray', linestyle='--', alpha=0.5,
+            label=f'Baseline ({y_test.mean():.1%})')
+ax2.fill_between(recall, 0, precision, alpha=0.3, color=PROJECT_COLS['Highlight'])
+
+ax2.set_xlabel('Recall (Sensitivity)', fontsize=11)
+ax2.set_ylabel('Precision', fontsize=11)
+ax2.set_title('Precision-Recall Curve', fontweight='bold')
+ax2.legend(loc='upper right')
+
+# Profit Curve
+ax3 = axes[1, 0]
+ax3.plot(profit_df['pct_population'] * 100, profit_df['profit'] / 1000,
+         color=PROJECT_COLS['Profit'], linewidth=2)
+ax3.axvline(x=OPTIMAL_PCT_POP * 100, color=PROJECT_COLS['Gold'], linestyle='--',
+            linewidth=2, label=f'Optimal: {OPTIMAL_PCT_POP:.0%}')
+ax3.scatter([OPTIMAL_PCT_POP * 100], [MAX_PROFIT / 1000],
+            color=PROJECT_COLS['Gold'], s=200, marker='*', zorder=5)
+
+ax3.annotate(f'Max Profit: ${MAX_PROFIT:,.0f}',
+             xy=(OPTIMAL_PCT_POP * 100, MAX_PROFIT / 1000),
+             xytext=(OPTIMAL_PCT_POP * 100 + 15, MAX_PROFIT / 1000),
+             fontsize=10, fontweight='bold',
+             arrowprops=dict(arrowstyle='->', color='gray'))
+
+ax3.fill_between(profit_df['pct_population'] * 100, 0, profit_df['profit'] / 1000,
+                 alpha=0.3, color=PROJECT_COLS['Profit'])
+ax3.set_xlabel('% of Leads Contacted', fontsize=11)
+ax3.set_ylabel('Profit ($K)', fontsize=11)
+ax3.set_title('Profit Curve', fontweight='bold')
+ax3.legend(loc='upper right')
+ax3.set_xlim(0, 100)
+
+# Channel Tier Conversion
+ax4 = axes[1, 1]
+
+if 'channel_tier' in df.columns:
+    test_indices = X_test.index
+    test_df_plot = df.loc[test_indices].copy()
+    test_df_plot['actual'] = y_test
+
+    channel_conv = test_df_plot.groupby('channel_tier')['actual'].agg(['mean', 'count'])
+    channel_conv = channel_conv.reindex(['Premium', 'Standard', 'Low-Value'])
+
+    tier_colors = [PROJECT_COLS['Premium'], PROJECT_COLS['Neutral'], PROJECT_COLS['Toxic']]
+    bars = ax4.bar(channel_conv.index, channel_conv['mean'], color=tier_colors, edgecolor='black')
+
+    for i, (idx, row) in enumerate(channel_conv.iterrows()):
+        ax4.text(i, row['mean'] + 0.01, f'{row["mean"]:.1%}', ha='center', fontweight='bold')
+        ax4.text(i, row['mean'] / 2, f'n={int(row["count"]):,}', ha='center', color='white', fontsize=9)
+
+    ax4.set_ylabel('Conversion Rate', fontsize=11)
+    ax4.set_xlabel('Channel Tier', fontsize=11)
+    ax4.set_title('Conversion by Channel Tier', fontweight='bold')
+    ax4.axhline(y=test_df_plot['actual'].mean(), color='black', linestyle='--',
+                alpha=0.5, label=f'Baseline ({test_df_plot["actual"].mean():.1%})')
+    ax4.legend()
+else:
+    if hasattr(CHAMPION_MODEL, 'feature_importances_'):
+        importances = CHAMPION_MODEL.feature_importances_
+        imp_df = pd.DataFrame({
+            'feature': X_train_te.columns,
+            'importance': importances
+        }).sort_values('importance', ascending=True).tail(15)
+
+        ax4.barh(range(len(imp_df)), imp_df['importance'], color=PROJECT_COLS['Neutral'])
+        ax4.set_yticks(range(len(imp_df)))
+        ax4.set_yticklabels(imp_df['feature'], fontsize=9)
+        ax4.set_xlabel('Importance', fontsize=11)
+        ax4.set_title('Feature Importance', fontweight='bold')
+
+plt.tight_layout()
+plt.suptitle(f'{CHAMPION_NAME} Performance Dashboard',
+             fontsize=14, fontweight='bold', y=1.02)
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+# SHAP Explainability
+
+SHAP values decompose each prediction into individual feature contributions, making the model interpretable for stakeholder conversations.
+
+```{python}
+#| label: shap-analysis
+
+# ==============================================================================
+# SHAP Analysis
+# ==============================================================================
+
+if SHAP_AVAILABLE:
+    print("Running SHAP analysis...")
+
+    np.random.seed(RANDOM_STATE)
+    bg_idx = np.random.choice(len(X_train_te), min(SHAP_BACKGROUND_SAMPLES, len(X_train_te)), replace=False)
+    test_idx = np.random.choice(len(X_test_te), min(SHAP_TEST_SAMPLES, len(X_test_te)), replace=False)
+
+    X_bg = X_train_te.iloc[bg_idx]
+    X_explain = X_test_te.iloc[test_idx]
+
+    try:
+        if CHAMPION_NAME in ['CatBoost', 'XGBoost', 'LightGBM', 'GradientBoosting', 'RandomForest']:
+            if CHAMPION_NAME == 'CatBoost' and hasattr(CHAMPION_MODEL, '_model'):
+                explainer = shap.TreeExplainer(CHAMPION_MODEL._model)
+            else:
+                explainer = shap.TreeExplainer(CHAMPION_MODEL)
+            shap_values = explainer.shap_values(X_explain)
+
+            if isinstance(shap_values, list):
+                shap_values = shap_values[1]
+
+        elif CHAMPION_NAME == 'StackingEnsemble':
+            print("Explaining best base estimator...")
+            best_base_name = top_3_names[0]
+            best_base_model = best_models[best_base_name]
+
+            if best_base_name == 'CatBoost' and hasattr(best_base_model, '_model'):
+                explainer = shap.TreeExplainer(best_base_model._model)
+            else:
+                explainer = shap.TreeExplainer(best_base_model)
+            shap_values = explainer.shap_values(X_explain)
+            if isinstance(shap_values, list):
+                shap_values = shap_values[1]
+            print(f"SHAP computed for: {best_base_name}")
+
+        else:
+            print("Using KernelExplainer...")
+            explainer = shap.KernelExplainer(
+                lambda x: CHAMPION_MODEL.predict_proba(x)[:, 1],
+                X_bg
+            )
+            shap_values = explainer.shap_values(X_explain, nsamples=100)
+
+        fig, ax = plt.subplots(figsize=(12, 8))
+        shap.summary_plot(shap_values, X_explain, plot_type="bar", show=False, max_display=20)
+        plt.title(f'SHAP Feature Importance: {CHAMPION_NAME}', fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+
+        fig, ax = plt.subplots(figsize=(12, 10))
+        shap.summary_plot(shap_values, X_explain, show=False, max_display=15)
+        plt.title(f'SHAP Value Distribution', fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+
+        print("SHAP analysis complete.")
+
+    except Exception as e:
+        print(f"SHAP analysis failed: {e}")
+        print("Continuing without SHAP visualizations.")
+else:
+    print("SHAP not available. Skipping explainability analysis.")
+```
+
+------------------------------------------------------------------------
+
+# Summary and Recommendations
+
+```{python}
+#| label: bottom-line
+
+# ==============================================================================
+# Summary
+# ==============================================================================
+
+runtime_min = (time.time() - START_TIME) / 60
+
+# Revenue projections
+baseline_profit = y_test.sum() * VALUE_PER_SQL - len(y_test) * COST_PER_CALL
+model_profit = MAX_PROFIT
+monthly_lift = model_profit - baseline_profit
+annualized_lift = monthly_lift * 12
+
+# Hidden gem analysis
+if 'is_hidden_gem' in X_test.columns:
+    gem_mask = X_test['is_hidden_gem'] == 1
+    gem_conv_rate = y_test[gem_mask.values].mean() if gem_mask.sum() > 0 else 0
+else:
+    gem_conv_rate = 0
+
+# Channel analysis
+if 'channel_tier' in df.columns:
+    test_indices = X_test.index
+    test_df_final = df.loc[test_indices].copy()
+    test_df_final['actual'] = y_test
+
+    toxic_mask = test_df_final['channel_tier'] == 'Low-Value'
+    toxic_conv = test_df_final[toxic_mask]['actual'].mean() if toxic_mask.sum() > 0 else 0
+    toxic_count = toxic_mask.sum()
+
+    premium_mask = test_df_final['channel_tier'] == 'Premium'
+    premium_conv = test_df_final[premium_mask]['actual'].mean() if premium_mask.sum() > 0 else 0
+else:
+    toxic_conv = 0
+    toxic_count = 0
+    premium_conv = 0
+
+# Top decile
+top_decile_mask = test_probs >= np.percentile(test_probs, 90)
+golden_segment_rate = y_test[top_decile_mask].mean() if top_decile_mask.sum() > 0 else 0
+
+print(f"""
+Model Performance:
+  AUC-ROC:          {FINAL_AUC:.4f} {'(target met)' if FINAL_AUC >= 0.90 else f'(target: 0.90, gap: {0.90 - FINAL_AUC:.4f})'}
+  Average Precision: {test_ap:.4f}
+  Best Model:       {CHAMPION_NAME}
+  Validation:       5-fold CV
+
+Revenue Impact (test set projection):
+  Optimal Threshold:  Score > {OPTIMAL_THRESHOLD:.3f}
+  Maximum Profit:     ${MAX_PROFIT:,.0f}
+  Capture Rate:       {OPTIMAL_PCT_CAPTURE:.0%} of SQLs with {OPTIMAL_PCT_POP:.0%} of calls
+  ROI per Call:       ${(MAX_PROFIT / OPTIMAL_CALLS):.2f}
+  Annualized Lift:    ${annualized_lift:,.0f}
+
+Actionable Findings:
+
+1. Deprioritize low-value channel leads (External Demand Gen, Email).
+   These convert at {toxic_conv:.1%} across {toxic_count:,} leads and generate
+   cost without proportional return.
+
+2. Route "Non-Manufacturing" and "Not Enough Info" accounts to experienced reps.
+   These hidden gem leads convert at {gem_conv_rate:.1%}, likely representing
+   consultants or small firms that standard firmographic scoring misses.
+
+3. Use the intent score to differentiate urgency among P1 leads.
+   "Contact Us" P1 = high urgency (score: 5) vs "Webinar" P1 = low urgency (score: 1).
+
+4. Invest in premium channels.
+   Direct/Inbound, SEO, and Referrals convert at {premium_conv:.1%}.
+
+5. Focus outbound targeting on the high-conversion profile:
+   Directors/VPs in Pharma & BioTech with Global/Corporate scope and
+   In-House manufacturing operations. The top decile converts at {golden_segment_rate:.1%}
+   versus {y_test.mean():.1%} baseline.
+
+Implementation:
+  - Deploy scoring engine to CRM (threshold: {OPTIMAL_THRESHOLD:.2f})
+  - Flag low-value channel leads in CRM for deprioritization
+  - Flag hidden gem accounts for priority routing
+  - Route high-score leads (>{OPTIMAL_THRESHOLD:.2f}) to senior reps
+
+Runtime: {runtime_min:.1f} minutes
+""")
+
+# Summary table
+summary_data = {
+    'Metric': ['AUC-ROC', 'Average Precision', 'Optimal Threshold', 'Max Profit',
+               'Annualized Revenue Lift', 'Calls Required', 'SQLs Captured',
+               'Predictive Lift', 'Hidden Gem Conv Rate', 'Low-Value Channel Conv Rate'],
+    'Value': [f'{FINAL_AUC:.4f}', f'{test_ap:.4f}', f'{OPTIMAL_THRESHOLD:.3f}',
+              f'${MAX_PROFIT:,.0f}', f'${annualized_lift:,.0f}', f'{OPTIMAL_CALLS:,}',
+              f'{OPTIMAL_SQLS:,} ({OPTIMAL_PCT_CAPTURE:.0%})',
+              f'{OPTIMAL_PCT_CAPTURE/OPTIMAL_PCT_POP:.1f}x', f'{gem_conv_rate:.1%}',
+              f'{toxic_conv:.1%}']
+}
+summary_df = pd.DataFrame(summary_data)
+print(summary_df.to_markdown(index=False))
+```
+
+------------------------------------------------------------------------
+
+# Sponsor Q&A Validation
+
+This section calculates the actual conversion rates and lifts for each strategic claim, providing data-backed evidence for sponsor discussions.
+
+```{python}
+#| label: sponsor-qa-validation
+
+# ==============================================================================
+# Sponsor Q&A Validation
+# ==============================================================================
+
+print("Validating strategic claims against test set data...")
+
+# Create validation dataframe
+test_indices = X_test.index
+validation_df = df.loc[test_indices].copy()
+validation_df['actual_outcome'] = y_test
+validation_df['model_score'] = test_probs
+
+baseline_conv = validation_df['actual_outcome'].mean()
+baseline_n = len(validation_df)
+
+print(f"\nBaseline: {baseline_conv:.1%} conversion ({baseline_n:,} leads in test set)")
+
+# Q1: Are low-value channels dragging down conversion?
+print("\n" + "-" * 50)
+print("Q1: Are low-value channels (External Demand Gen, Email) underperforming?")
+print("-" * 50)
+
+q1_evidence = ""
+q1_verdict = ""
+
+if 'channel_tier' in validation_df.columns:
+    toxic_df = validation_df[validation_df['channel_tier'] == 'Low-Value']
+    premium_df = validation_df[validation_df['channel_tier'] == 'Premium']
+    standard_df = validation_df[validation_df['channel_tier'] == 'Standard']
+
+    toxic_conv = toxic_df['actual_outcome'].mean() if len(toxic_df) > 0 else 0
+    toxic_n = len(toxic_df)
+    premium_conv = premium_df['actual_outcome'].mean() if len(premium_df) > 0 else 0
+    premium_n = len(premium_df)
+    standard_conv = standard_df['actual_outcome'].mean() if len(standard_df) > 0 else 0
+
+    toxic_cost = toxic_n * COST_PER_CALL
+    toxic_sqls = toxic_df['actual_outcome'].sum()
+    toxic_revenue = toxic_sqls * VALUE_PER_SQL
+    toxic_loss = toxic_cost - toxic_revenue
+
+    q1_evidence = f"Low-Value: {toxic_conv:.1%} (n={toxic_n:,}) vs Premium: {premium_conv:.1%}"
+    q1_verdict = "YES - Deprioritize" if toxic_conv < baseline_conv * 0.5 else "MONITOR"
+
+    print(f"  Low-Value Channel Conv: {toxic_conv:.1%} (n={toxic_n:,})")
+    print(f"  Premium Channel Conv: {premium_conv:.1%} (n={premium_n:,})")
+    print(f"  Standard Channel Conv: {standard_conv:.1%}")
+    print(f"  Baseline Conv: {baseline_conv:.1%}")
+    print(f"  Net loss from low-value channels: ${toxic_loss:,.0f}")
+    print(f"  Verdict: {q1_verdict}")
+else:
+    q1_evidence = "Channel data unavailable"
+    q1_verdict = "Cannot evaluate"
+
+# Q2: Do stale leads convert?
+print("\n" + "-" * 50)
+print("Q2: Do stale (>180 day) leads still convert?")
+print("-" * 50)
+
+q2_evidence = ""
+q2_verdict = ""
+
+if 'is_stale' in validation_df.columns:
+    stale_df = validation_df[validation_df['is_stale'] == 1]
+    fresh_df = validation_df[validation_df['is_fresh'] == 1]
+
+    stale_conv = stale_df['actual_outcome'].mean() if len(stale_df) > 0 else 0
+    stale_n = len(stale_df)
+    fresh_conv = fresh_df['actual_outcome'].mean() if len(fresh_df) > 0 else 0
+    fresh_n = len(fresh_df)
+
+    q2_evidence = f"Stale (>180d): {stale_conv:.1%} (n={stale_n:,}) vs Fresh (<30d): {fresh_conv:.1%}"
+
+    if stale_conv > baseline_conv * 0.8:
+        q2_verdict = "Still viable"
+    elif stale_conv > baseline_conv * 0.5:
+        q2_verdict = "Marginal - deprioritize"
+    else:
+        q2_verdict = "Not viable - remove from funnel"
+
+    print(f"  Stale lead conv (>180 days): {stale_conv:.1%} (n={stale_n:,})")
+    print(f"  Fresh lead conv (<30 days): {fresh_conv:.1%} (n={fresh_n:,})")
+    print(f"  Baseline conv: {baseline_conv:.1%}")
+    print(f"  Verdict: {q2_verdict}")
+else:
+    q2_evidence = "Lead age data unavailable"
+    q2_verdict = "Cannot evaluate"
+
+# Q3: Are hidden gems real?
+print("\n" + "-" * 50)
+print("Q3: Do 'hidden gem' accounts (Unknown/Non-Mfg) actually convert at higher rates?")
+print("-" * 50)
+
+q3_evidence = ""
+q3_verdict = ""
+
+if 'is_hidden_gem' in validation_df.columns:
+    gem_df = validation_df[validation_df['is_hidden_gem'] == 1]
+    non_gem_df = validation_df[validation_df['is_hidden_gem'] == 0]
+
+    gem_conv = gem_df['actual_outcome'].mean() if len(gem_df) > 0 else 0
+    gem_n = len(gem_df)
+    non_gem_conv = non_gem_df['actual_outcome'].mean() if len(non_gem_df) > 0 else 0
+
+    gem_lift = gem_conv / baseline_conv if baseline_conv > 0 else 0
+
+    q3_evidence = f"Hidden Gems: {gem_conv:.1%} (n={gem_n:,}), Lift: {gem_lift:.1f}x"
+
+    if gem_conv > baseline_conv * 1.5:
+        q3_verdict = "Yes - prioritize"
+    elif gem_conv > baseline_conv:
+        q3_verdict = "Yes - above baseline"
+    else:
+        q3_verdict = "No - below baseline"
+
+    print(f"  Hidden gem conv: {gem_conv:.1%} (n={gem_n:,})")
+    print(f"  Non-gem conv: {non_gem_conv:.1%}")
+    print(f"  Baseline conv: {baseline_conv:.1%}")
+    print(f"  Lift: {gem_lift:.1f}x")
+    print(f"  Verdict: {q3_verdict}")
+else:
+    q3_evidence = "Hidden gem flag unavailable"
+    q3_verdict = "Cannot evaluate"
+
+# Q4: Does capital density matter?
+print("\n" + "-" * 50)
+print("Q4: Does capital density (industry-weighted size) correlate with conversion?")
+print("-" * 50)
+
+q4_evidence = ""
+q4_verdict = ""
+
+if 'capital_density_log' in validation_df.columns:
+    cap_corr = validation_df['capital_density_log'].corr(validation_df['actual_outcome'])
+
+    validation_df['cap_quartile'] = pd.qcut(validation_df['capital_density_log'], 4, labels=['Q1-Low', 'Q2', 'Q3', 'Q4-High'])
+    quartile_conv = validation_df.groupby('cap_quartile')['actual_outcome'].mean()
+
+    q1_conv = quartile_conv.get('Q1-Low', 0)
+    q4_conv = quartile_conv.get('Q4-High', 0)
+    q4_lift = q4_conv / q1_conv if q1_conv > 0 else 0
+
+    q4_evidence = f"Correlation: {cap_corr:.3f}, Q4/Q1 Lift: {q4_lift:.1f}x"
+
+    if abs(cap_corr) > 0.1:
+        q4_verdict = "Significant signal"
+    elif abs(cap_corr) > 0.05:
+        q4_verdict = "Weak signal"
+    else:
+        q4_verdict = "Not predictive"
+
+    print(f"  Correlation with target: {cap_corr:.4f}")
+    print(f"  Q1 (low budget) conv: {q1_conv:.1%}")
+    print(f"  Q4 (high budget) conv: {q4_conv:.1%}")
+    print(f"  Q4/Q1 lift: {q4_lift:.1f}x")
+    print(f"  Verdict: {q4_verdict}")
+else:
+    q4_evidence = "Capital density data unavailable"
+    q4_verdict = "Cannot evaluate"
+
+# Q5: Does intent strength predict conversion?
+print("\n" + "-" * 50)
+print("Q5: Does intent strength (priority encoding) predict conversion?")
+print("-" * 50)
+
+q5_evidence = ""
+q5_verdict = ""
+
+if 'intent_strength' in validation_df.columns:
+    intent_corr = validation_df['intent_strength'].corr(validation_df['actual_outcome'])
+
+    intent_conv = validation_df.groupby('intent_strength')['actual_outcome'].agg(['mean', 'count'])
+    intent_conv = intent_conv.sort_index(ascending=False)
+
+    high_intent_conv = validation_df[validation_df['intent_strength'] >= 4]['actual_outcome'].mean()
+    low_intent_conv = validation_df[validation_df['intent_strength'] <= 1]['actual_outcome'].mean()
+    intent_lift = high_intent_conv / low_intent_conv if low_intent_conv > 0 else 0
+
+    q5_evidence = f"Correlation: {intent_corr:.3f}, High/Low Lift: {intent_lift:.1f}x"
+
+    if intent_corr > 0.1:
+        q5_verdict = "Strong signal"
+    elif intent_corr > 0.05:
+        q5_verdict = "Weak signal"
+    else:
+        q5_verdict = "Encoding needs revision"
+
+    print(f"  Correlation with target: {intent_corr:.4f}")
+    print(f"  High intent (>=4) conv: {high_intent_conv:.1%}")
+    print(f"  Low intent (<=1) conv: {low_intent_conv:.1%}")
+    print(f"  High/Low lift: {intent_lift:.1f}x")
+    print(f"  Verdict: {q5_verdict}")
+else:
+    q5_evidence = "Intent strength data unavailable"
+    q5_verdict = "Cannot evaluate"
+
+# Q6: Does role-product match increase conversion?
+print("\n" + "-" * 50)
+print("Q6: Does role-product match (title alignment) increase conversion?")
+print("-" * 50)
+
+q6_evidence = ""
+q6_verdict = ""
+
+if 'role_product_match' in validation_df.columns:
+    matched_df = validation_df[validation_df['role_product_match'] == 1]
+    unmatched_df = validation_df[validation_df['role_product_match'] == 0]
+
+    matched_conv = matched_df['actual_outcome'].mean() if len(matched_df) > 0 else 0
+    matched_n = len(matched_df)
+    unmatched_conv = unmatched_df['actual_outcome'].mean() if len(unmatched_df) > 0 else 0
+
+    match_lift = matched_conv / unmatched_conv if unmatched_conv > 0 else 0
+
+    q6_evidence = f"Matched: {matched_conv:.1%} (n={matched_n:,}), Lift: {match_lift:.1f}x"
+
+    if matched_conv > unmatched_conv * 1.2:
+        q6_verdict = "Yes - route by match"
+    else:
+        q6_verdict = "Weak impact"
+
+    print(f"  Matched conv: {matched_conv:.1%} (n={matched_n:,})")
+    print(f"  Unmatched conv: {unmatched_conv:.1%}")
+    print(f"  Lift: {match_lift:.1f}x")
+    print(f"  Verdict: {q6_verdict}")
+else:
+    q6_evidence = "Role-product match data unavailable"
+    q6_verdict = "Cannot evaluate"
+
+# Summary table
+print("\n" + "=" * 70)
+print("Sponsor Q&A Summary")
+print("=" * 70)
+
+brief_data = {
+    'Question': [
+        "Are low-value channels (Ext Demand Gen) underperforming?",
+        "Do stale (>180d) leads still convert?",
+        "Are hidden gems (Unknown/Non-Mfg) high converters?",
+        "Does capital density (budget proxy) correlate with success?",
+        "Does intent strength (priority encoding) predict conversion?",
+        "Does role-product match increase conversion?"
+    ],
+    'Evidence': [
+        q1_evidence, q2_evidence, q3_evidence,
+        q4_evidence, q5_evidence, q6_evidence
+    ],
+    'Verdict': [
+        q1_verdict, q2_verdict, q3_verdict,
+        q4_verdict, q5_verdict, q6_verdict
+    ]
+}
+
+brief_df = pd.DataFrame(brief_data)
+print(brief_df.to_markdown(index=False))
+
+# Talking points
+print(f"""
+Model credibility:
+  - Test set AUC: {FINAL_AUC:.4f} (holdout data, no leakage)
+  - 5-fold cross-validation for robust generalization
+  - Best model: {CHAMPION_NAME}
+
+Business impact (test set projection):
+  - Optimal threshold: {OPTIMAL_THRESHOLD:.3f}
+  - Max profit: ${MAX_PROFIT:,.0f}
+  - SQLs captured: {OPTIMAL_PCT_CAPTURE:.0%} with {OPTIMAL_PCT_POP:.0%} of calls
+  - Projected annual lift: ${annualized_lift:,.0f}
+""")
+
+print("Validation complete.")
+```
+
+------------------------------------------------------------------------
+
+*MasterControl Lead Scoring Model V10 - MSBA Capstone Group 3, Spring 2026*
