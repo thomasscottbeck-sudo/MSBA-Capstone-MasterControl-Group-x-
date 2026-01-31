@@ -9,9 +9,9 @@
 
 ## 🛠️ Functional Hub & Assignments
 
-| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📝 Question Log](./docs/Sponsor_QA.md) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
+| **Core Tools** 🛠️ | [📋 Specs](./docs/Assignments.md) | [📊 Data Room](./data/) | [📁 Shared Google Drive](https://drive.google.com/drive/u/0/folders/1QzSqJZNh6-H4rR257ahe6yhg6PFPd7X7) | [🌐 Group Dashboard](https://thomasscottbeck-sudo.github.io/MSBA-Capstone-MasterControl-GroupProject/) | [💻 GitHub Repo](https://github.com/thomasscottbeck-sudo/MSBA-Capstone-MasterControl-GroupProject) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Assignments** 📂 | [📂 01 Problem](./notebooks/01_Business_Problem/) | [📂 02 EDA](./notebooks/02_EDA/) | [📂 03 Modeling](./notebooks/03_Modeling/) | [📂 04 Presentation](./notebooks/04_Presentation/) | [Shared Folder Google Drive](https://docs.google.com/document/d/1hEoEOz1e5vL9a94Nr8O9mCShlzDes7FidaHFJYPHH94/edit?usp=drive_link) |
+| **Assignments** 📂 | [📄 01 Business Problem Statement](https://docs.google.com/document/d/1hEoEOz1e5vL9a94Nr8O9mCShlzDes7FidaHFJYPHH94/edit?usp=drive_link) | [📂 02 EDA](./notebooks/02_EDA/) | [📂 03 Modeling](./notebooks/03_Modeling/) | [📂 04 Presentation](./notebooks/04_Presentation/) | 🚫 |
 
 ---
 
